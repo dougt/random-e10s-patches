@@ -1,0 +1,1101 @@
+diff --git a/chrome/src/Makefile.in b/chrome/src/Makefile.in
+--- a/chrome/src/Makefile.in
++++ b/chrome/src/Makefile.in
+@@ -45,16 +45,22 @@ include $(DEPTH)/config/autoconf.mk
+ MODULE          = chrome
+ LIBRARY_NAME    = chrome
+ EXPORT_LIBRARY = 1
+ IS_COMPONENT    = 1
+ MODULE_NAME     = nsChromeModule
+ GRE_MODULE      = 1
+ LIBXUL_LIBRARY  = 1
+ 
++EXPORTS_NAMESPACES = mozilla/chrome
++
++EXPORTS_mozilla/chrome = \
++		ChromeTypes.h \
++		RegistryMessageUtils.h \
++		$(NULL)
+ 
+ CPPSRCS		= \
+ 		nsChromeFactory.cpp \
+ 		nsChromeRegistry.cpp \
+ 		nsChromeProtocolHandler.cpp \
+ 		$(NULL)
+ 
+ EXTRA_DSO_LDOPTS = \
+@@ -65,14 +71,22 @@ EXTRA_DSO_LDOPTS = \
+ ifneq (,$(filter gtk2,$(MOZ_WIDGET_TOOLKIT)))
+ EXTRA_DSO_LDOPTS += $(MOZ_GTK2_LIBS)
+ endif
+ 
+ ifeq (cocoa,$(MOZ_WIDGET_TOOLKIT))
+ EXTRA_DSO_LDOPTS += $(TK_LIBS)
+ endif
+ 
++include $(topsrcdir)/config/config.mk
++include $(topsrcdir)/ipc/chromium/chromium-config.mk
+ include $(topsrcdir)/config/rules.mk
+ 
++LOCAL_INCLUDES += \
++		-I$(topsrcdir)/dom/ipc \
++		-I$(topsrcdir)/netwerk/protocol/res/src \
++		-I$(topsrcdir)/netwerk/base/src \
++		$(NULL)
++
+ ifneq (,$(filter gtk2,$(MOZ_WIDGET_TOOLKIT)))
+ CXXFLAGS          += $(MOZ_GTK2_CFLAGS)
+ endif
+ 
+diff --git a/chrome/src/nsChromeRegistry.cpp b/chrome/src/nsChromeRegistry.cpp
+--- a/chrome/src/nsChromeRegistry.cpp
++++ b/chrome/src/nsChromeRegistry.cpp
+@@ -34,16 +34,22 @@
+  * use your version of this file under the terms of the MPL, indicate your
+  * decision by deleting the provisions above and replace them with the notice
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
++#ifdef MOZ_IPC
++#include "mozilla/dom/TabParent.h"
++#include "mozilla/dom/ContentProcessParent.h"
++#include "RegistryMessageUtils.h"
++#endif
++
+ #include "nsChromeRegistry.h"
+ 
+ #include <string.h>
+ 
+ #include "prio.h"
+ #include "prprf.h"
+ #if defined(XP_WIN)
+ #include <windows.h>
+@@ -96,16 +102,17 @@
+ #include "nsILookAndFeel.h"
+ #include "nsIObserverService.h"
+ #include "nsIPrefService.h"
+ #include "nsIPrefBranch.h"
+ #include "nsIPrefBranch2.h"
+ #include "nsIPresShell.h"
+ #include "nsIProtocolHandler.h"
+ #include "nsIResProtocolHandler.h"
++#include "nsResProtocolHandler.h"
+ #include "nsIScriptError.h"
+ #include "nsIServiceManager.h"
+ #include "nsISimpleEnumerator.h"
+ #include "nsIStyleSheet.h"
+ #include "nsISupportsArray.h"
+ #include "nsIVersionComparator.h"
+ #include "nsIWindowMediator.h"
+ #include "nsIXPConnect.h"
+@@ -448,16 +455,30 @@ getUILangCountry(nsACString& aUILang)
+   nsAutoString uiLang;
+   rv = localeService->GetLocaleComponentForUserAgent(uiLang);
+   NS_ENSURE_SUCCESS(rv, rv);
+ 
+   CopyUTF16toUTF8(uiLang, aUILang);
+   return NS_OK;
+ }
+ 
++nsChromeRegistry*
++nsChromeRegistry::GetService()
++{
++  if (!nsChromeRegistry::gChromeRegistry)
++  {
++    // We don't actually want this ref, we just want the service to
++    // initialize if it hasn't already.
++    nsCOMPtr<nsIChromeRegistry> reg(
++        do_GetService(NS_CHROMEREGISTRY_CONTRACTID));
++    NS_ENSURE_TRUE(nsChromeRegistry::gChromeRegistry, NULL);
++  }
++  return gChromeRegistry;
++}
++
+ nsresult
+ nsChromeRegistry::Init()
+ {
+   nsresult rv;
+ 
+   // Check to see if necko and the JAR protocol handler are registered yet
+   // if not, somebody is doing work during XPCOM registration that they
+   // shouldn't be doing. See bug 292549, where JS components are trying
+@@ -1140,16 +1161,212 @@ nsChromeRegistry::AllowContentToAccess(n
+ }
+ 
+ static PLDHashOperator
+ RemoveAll(PLDHashTable *table, PLDHashEntryHdr *entry, PRUint32 number, void *arg)
+ {
+   return (PLDHashOperator) (PL_DHASH_NEXT | PL_DHASH_REMOVE);
+ }
+ 
++PLDHashOperator
++nsChromeRegistry::SendAllToChildProcess(PLDHashTable *table, PLDHashEntryHdr *entry, PRUint32 number, void *arg)
++{
++  mozilla::dom::TabParent* tabParent = static_cast<mozilla::dom::TabParent*>(arg);
++  nsChromeRegistry::PackageEntry* package = static_cast<PackageEntry*>(entry);
++  nsString packageName(NS_ConvertUTF8toUTF16(package->package).get());
++  nsString baseURI;
++  nsCAutoString prePath, path;
++
++  if(package->baseURI)
++  {
++    package->baseURI->GetPrePath(prePath);
++    package->baseURI->GetPath(path);
++  }
++  CopyUTF8toUTF16(prePath, baseURI);
++  AppendUTF8toUTF16(path, baseURI);
++  
++  if(!tabParent->SendregisterChromePackage(packageName, baseURI, package->flags))
++  {
++    //XXXjdm error
++  }
++  return (PLDHashOperator)PL_DHASH_NEXT;
++}
++
++PLDHashOperator
++nsChromeRegistry::SendResourceToChildProcess(const nsACString& aKey, nsIURI* aURI, void* aArg)
++{
++  mozilla::dom::TabParent* tabParent = static_cast<mozilla::dom::TabParent*>(aArg);
++  nsString resolved, packageName(NS_ConvertUTF8toUTF16(aKey).get());
++  nsCAutoString prePath, path;
++
++  aURI->GetPrePath(prePath);
++  aURI->GetPath(path);
++  CopyUTF8toUTF16(prePath, resolved);
++  AppendUTF8toUTF16(path, resolved);
++
++  if(!tabParent->SendregisterChromeResource(packageName, resolved))
++  {
++    //XXXjdm error
++  }
++  return (PLDHashOperator)PL_DHASH_NEXT;
++}
++
++void
++nsChromeRegistry::SendRegisteredPackages(mozilla::dom::TabParent* aParent)
++{
++  PL_DHashTableEnumerate(&mPackagesHash, SendAllToChildProcess, aParent);
++
++  nsCOMPtr<nsIIOService> io (do_GetIOService());
++  //if (!io) return NS_ERROR_FAILURE;
++
++  nsCOMPtr<nsIProtocolHandler> ph;
++  nsresult rv = io->GetProtocolHandler("resource", getter_AddRefs(ph));
++  //    NS_ENSURE_SUCCESS(rv, rv);
++  nsCOMPtr<nsIResProtocolHandler> irph (do_QueryInterface(ph));
++  nsResProtocolHandler* rph = static_cast<nsResProtocolHandler*>(irph.get());
++  rph->EnumerateSubstitutions(SendResourceToChildProcess, aParent);
++}
++
++void
++nsChromeRegistry::RegisterPackage(const nsString& aPackage,
++                                  const nsString& aBaseURI,
++                                  const PRUint32& aFlags)
++{
++  const char *package = NS_ConvertUTF16toUTF8(aPackage).get();
++  PackageEntry* entry =
++      static_cast<PackageEntry*>(PL_DHashTableOperate(&mPackagesHash,
++                                                      & (const nsACString&) nsDependentCString(package),
++                                                      PL_DHASH_ADD));
++  entry->flags = aFlags;
++  NS_NewURI(getter_AddRefs(entry->baseURI), NS_ConvertUTF16toUTF8(aBaseURI));
++}
++
++void
++nsChromeRegistry::RegisterResource(const nsString& aPackage,
++                                   const nsString& aResolvedURI)
++{
++  nsCOMPtr<nsIIOService> io (do_GetIOService());
++  //if (!io) return NS_ERROR_FAILURE;
++
++  nsCOMPtr<nsIProtocolHandler> ph;
++  nsresult rv = io->GetProtocolHandler("resource", getter_AddRefs(ph));
++  //    NS_ENSURE_SUCCESS(rv, rv);
++  
++  nsCOMPtr<nsIResProtocolHandler> rph (do_QueryInterface(ph));
++  //if (!rph) return NS_ERROR_FAILURE;
++
++  nsCOMPtr<nsIURI> resolved;
++  NS_NewURI(getter_AddRefs(resolved), NS_ConvertUTF16toUTF8(aResolvedURI));
++
++  rv = rph->SetSubstitution(NS_ConvertUTF16toUTF8(aPackage), resolved);
++}
++
++#ifdef MOZ_IPC
++PLDHashOperator
++nsChromeRegistry::CollectPackages(PLDHashTable *table,
++                                  PLDHashEntryHdr *entry,
++                                  PRUint32 number,
++                                  void *arg)
++{
++  nsTArray<ChromePackage>* packages =
++      static_cast<nsTArray<ChromePackage>*>(arg);
++  nsChromeRegistry::PackageEntry* package = static_cast<PackageEntry*>(entry);
++  ChromePackage chromePackage = {
++    package->package,
++    package->baseURI,
++    package->flags
++  };
++  packages->AppendElement(chromePackage);
++  return (PLDHashOperator)PL_DHASH_NEXT;
++}
++
++PLDHashOperator
++nsChromeRegistry::CollectResources(const nsACString& aKey,
++                                   nsIURI* aURI,
++                                   void* aArg)
++{
++  nsTArray<ChromeResource>* resources =
++      static_cast<nsTArray<ChromeResource>*>(aArg);
++  ChromeResource resource = {
++    nsDependentCString(aKey), aURI
++  };
++  resources->AppendElement(resource);
++  return (PLDHashOperator)PL_DHASH_NEXT;
++}
++
++void
++nsChromeRegistry::SendRegisteredChrome(
++    mozilla::dom::ContentProcessParent* aParent)
++{
++  nsTArray<ChromePackage> packages;
++  nsTArray<ChromeResource> resources;
++  
++  PL_DHashTableEnumerate(&mPackagesHash, CollectPackages, &packages);
++
++  nsCOMPtr<nsIIOService> io (do_GetIOService());
++  NS_ENSURE_TRUE(io, );
++
++  nsCOMPtr<nsIProtocolHandler> ph;
++  nsresult rv = io->GetProtocolHandler("resource", getter_AddRefs(ph));
++  NS_ENSURE_SUCCESS(rv, );
++  
++  nsCOMPtr<nsIResProtocolHandler> irph (do_QueryInterface(ph));
++  nsResProtocolHandler* rph = static_cast<nsResProtocolHandler*>(irph.get());
++  rph->EnumerateSubstitutions(CollectResources, &resources);
++
++  bool success = aParent->SendregisterChrome(packages, resources);
++  NS_ENSURE_TRUE(success, );
++}
++
++void
++nsChromeRegistry::RegisterRemoteChrome(const nsTArray<ChromePackage>& aPackages,
++                                       const nsTArray<ChromeResource>& aResources)
++{
++  for (PRUint32 i = aPackages.Length(); i > 0; ) {
++    --i;
++    RegisterPackage(aPackages[i]);
++  }
++
++  for (PRUint32 i = aResources.Length(); i > 0; ) {
++    --i;
++    RegisterResource(aResources[i]);
++  }
++}
++
++void
++nsChromeRegistry::RegisterPackage(const ChromePackage& aPackage)
++{
++  PackageEntry* entry =
++      static_cast<PackageEntry*>(PL_DHashTableOperate(&mPackagesHash,
++                                                      &aPackage.package,
++                                                      PL_DHASH_ADD));
++  NS_ENSURE_TRUE(entry, );
++  entry->flags = aPackage.flags;
++  entry->baseURI = aPackage.baseURI;
++}
++
++void
++nsChromeRegistry::RegisterResource(const ChromeResource& aResource)
++{
++  nsCOMPtr<nsIIOService> io (do_GetIOService());
++  NS_ENSURE_TRUE(io, );
++
++  nsCOMPtr<nsIProtocolHandler> ph;
++  nsresult rv = io->GetProtocolHandler("resource", getter_AddRefs(ph));
++  NS_ENSURE_SUCCESS(rv, );
++  
++  nsCOMPtr<nsIResProtocolHandler> rph (do_QueryInterface(ph));
++  NS_ENSURE_TRUE(rph, );
++
++  rv = rph->SetSubstitution(aResource.package, aResource.resolvedURI);
++  NS_ENSURE_SUCCESS(rv, );
++}
++#endif // MOZ_IPC
++
++
+ NS_IMETHODIMP
+ nsChromeRegistry::CheckForNewChrome()
+ {
+   nsresult rv;
+ 
+   PL_DHashTableEnumerate(&mPackagesHash, RemoveAll, nsnull);
+   mOverlayHash.Clear();
+   mStyleHash.Clear();
+diff --git a/chrome/src/nsChromeRegistry.h b/chrome/src/nsChromeRegistry.h
+--- a/chrome/src/nsChromeRegistry.h
++++ b/chrome/src/nsChromeRegistry.h
+@@ -50,28 +50,36 @@
+ 
+ #include "nsCOMArray.h"
+ #include "nsString.h"
+ #include "nsTHashtable.h"
+ #include "nsURIHashKey.h"
+ #include "nsVoidArray.h"
+ #include "nsTArray.h"
+ #include "nsInterfaceHashtable.h"
++#include "ChromeTypes.h"
+ 
+ struct PRFileDesc;
+ class nsIAtom;
+ class nsIDOMWindowInternal;
+ class nsILocalFile;
+ class nsIPrefBranch;
+ class nsIRDFDataSource;
+ class nsIRDFResource;
+ class nsIRDFService;
+ class nsISimpleEnumerator;
+ class nsIURL;
+ 
++namespace mozilla {
++namespace dom {
++  class TabParent;
++  class ContentProcessParent;
++}
++}
++
+ // for component registration
+ // {47049e42-1d87-482a-984d-56ae185e367a}
+ #define NS_CHROMEREGISTRY_CID \
+ { 0x47049e42, 0x1d87, 0x482a, { 0x98, 0x4d, 0x56, 0xae, 0x18, 0x5e, 0x36, 0x7a } }
+ 
+ class nsChromeRegistry : public nsIToolkitChromeRegistry,
+ #ifdef MOZ_XUL
+                          public nsIXULOverlayProvider,
+@@ -96,30 +104,59 @@ public:
+   // nsChromeRegistry methods:
+   nsChromeRegistry() : mInitialized(PR_FALSE), mProfileLoaded(PR_FALSE) {
+     mPackagesHash.ops = nsnull;
+   }
+   ~nsChromeRegistry();
+ 
+   nsresult Init();
+ 
++  static nsChromeRegistry* GetService();
++
+   static nsChromeRegistry* gChromeRegistry;
+ 
+   static nsresult Canonify(nsIURL* aChromeURL);
+ 
++  void SendRegisteredChrome(mozilla::dom::ContentProcessParent* aChild);
++  void RegisterRemoteChrome(const nsTArray<ChromePackage>& aPackages,
++                            const nsTArray<ChromeResource>& aResources);
++
++  void SendRegisteredPackages(mozilla::dom::TabParent* aChild);
++  void RegisterPackage(const nsString& aPackage,
++                       const nsString& aBaseURI,
++                       const PRUint32& aFlags);
++  void RegisterResource(const nsString& aPackage,
++                        const nsString& aResolvedURI);
++  static PLDHashOperator SendAllToChildProcess(PLDHashTable *table,
++                                               PLDHashEntryHdr *entry,
++                                               PRUint32 number, void *arg);
++  static PLDHashOperator SendResourceToChildProcess(const nsACString& aKey,
++                                                    nsIURI* aURI, void* aArg);
++
+ protected:
+   nsresult GetDynamicInfo(nsIURI *aChromeURL, PRBool aIsOverlay, nsISimpleEnumerator **aResult);
+ 
+   nsresult LoadInstallDataSource();
+   nsresult LoadProfileDataSource();
+ 
+   void FlushSkinCaches();
+   void FlushAllCaches();
+ 
+ private:
++#ifdef MOZ_IPC
++  void RegisterPackage(const ChromePackage& aPackage);
++  void RegisterResource(const ChromeResource& aResource);
++  static PLDHashOperator CollectPackages(PLDHashTable *table,
++                                         PLDHashEntryHdr *entry,
++                                         PRUint32 number, void *arg);
++  static PLDHashOperator CollectResources(const nsACString& aKey,
++                                          nsIURI* aURI, void* aArg);
++#endif
++  
++
+   nsresult SelectLocaleFromPref(nsIPrefBranch* prefs);
+ 
+   static nsresult RefreshWindow(nsIDOMWindowInternal* aWindow);
+   static nsresult GetProviderAndPath(nsIURL* aChromeURL,
+                                      nsACString& aProvider, nsACString& aPath);
+ 
+ #ifdef MOZ_XUL
+   NS_HIDDEN_(void) ProcessProvider(PRFileDesc *fd, nsIRDFService* aRDFs,
+diff --git a/content/base/src/nsFrameLoader.cpp b/content/base/src/nsFrameLoader.cpp
+--- a/content/base/src/nsFrameLoader.cpp
++++ b/content/base/src/nsFrameLoader.cpp
+@@ -114,16 +114,18 @@
+ #include <gdk/gdkx.h>
+ #include <gtk/gtk.h>
+ #endif
+ 
+ #ifdef MOZ_IPC
+ #include "ContentProcessParent.h"
+ #include "TabParent.h"
+ 
++#include "nsXULAppAPI.h"
++
+ using namespace mozilla;
+ using namespace mozilla::dom;
+ #endif
+ 
+ class nsAsyncDocShellDestroyer : public nsRunnable
+ {
+ public:
+   nsAsyncDocShellDestroyer(nsIDocShell* aDocShell)
+@@ -1516,16 +1518,18 @@ nsFrameLoader::TryNewProcess()
+     parentAsItem->GetRootTreeItem(getter_AddRefs(rootItem));
+     nsCOMPtr<nsIDOMWindow> rootWin = do_GetInterface(rootItem);
+     nsCOMPtr<nsIDOMChromeWindow> rootChromeWin = do_QueryInterface(rootWin);
+     NS_ABORT_IF_FALSE(rootChromeWin, "How did we not get a chrome window here?");
+ 
+     nsCOMPtr<nsIBrowserDOMWindow> browserDOMWin;
+     rootChromeWin->GetBrowserDOMWindow(getter_AddRefs(browserDOMWin));
+     mChildProcess->SetBrowserDOMWindow(browserDOMWin);
++
++    XRE_SendParentChromeRegistry(mChildProcess);
+   }
+   return true;
+ }
+ #endif
+ 
+ #ifdef MOZ_IPC
+ mozilla::dom::PIFrameEmbeddingParent*
+ nsFrameLoader::GetChildProcess()
+diff --git a/dom/ipc/ContentProcessChild.cpp b/dom/ipc/ContentProcessChild.cpp
+--- a/dom/ipc/ContentProcessChild.cpp
++++ b/dom/ipc/ContentProcessChild.cpp
+@@ -42,16 +42,18 @@
+ #include "mozilla/ipc/TestShellChild.h"
+ #include "mozilla/net/NeckoChild.h"
+ 
+ #include "nsXULAppAPI.h"
+ 
+ #include "base/message_loop.h"
+ #include "base/task.h"
+ 
++#include "nsChromeRegistry.h"
++
+ using namespace mozilla::ipc;
+ using namespace mozilla::net;
+ 
+ namespace mozilla {
+ namespace dom {
+ 
+ ContentProcessChild* ContentProcessChild::sSingleton;
+ 
+@@ -123,16 +125,25 @@ ContentProcessChild::AllocPNecko()
+ 
+ bool 
+ ContentProcessChild::DeallocPNecko(PNeckoChild* necko)
+ {
+     delete necko;
+     return true;
+ }
+ 
++bool
++ContentProcessChild::RecvregisterChrome(const nsTArray<ChromePackage>& packages,
++                                        const nsTArray<ChromeResource>& resources)
++{
++    nsChromeRegistry* chromeRegistry = nsChromeRegistry::GetService();
++    chromeRegistry->RegisterRemoteChrome(packages, resources);
++    return true;
++}
++
+ void
+ ContentProcessChild::Quit()
+ {
+     NS_ASSERTION(mQuit, "Exiting uncleanly!");
+     mIFrames.Clear();
+     mTestShells.Clear();
+ }
+ 
+diff --git a/dom/ipc/ContentProcessChild.h b/dom/ipc/ContentProcessChild.h
+--- a/dom/ipc/ContentProcessChild.h
++++ b/dom/ipc/ContentProcessChild.h
+@@ -38,16 +38,17 @@
+ 
+ #ifndef mozilla_dom_ContentProcessChild_h
+ #define mozilla_dom_ContentProcessChild_h
+ 
+ #include "mozilla/dom/PContentProcessChild.h"
+ 
+ #include "nsTArray.h"
+ #include "nsAutoPtr.h"
++#include "mozilla/chrome/ChromeTypes.h"
+ 
+ namespace mozilla {
+ namespace dom {
+ 
+ class ContentProcessChild : public PContentProcessChild
+ {
+ public:
+     ContentProcessChild();
+@@ -66,16 +67,19 @@ public:
+     virtual bool DeallocPIFrameEmbedding(PIFrameEmbeddingChild*);
+ 
+     virtual PTestShellChild* AllocPTestShell();
+     virtual bool DeallocPTestShell(PTestShellChild*);
+ 
+     virtual PNeckoChild* AllocPNecko();
+     virtual bool DeallocPNecko(PNeckoChild*);
+ 
++    virtual bool RecvregisterChrome(const nsTArray<ChromePackage>& packages,
++                                    const nsTArray<ChromeResource>& resources);
++
+ private:
+     NS_OVERRIDE
+     virtual void ActorDestroy(ActorDestroyReason why);
+ 
+     void Quit();
+ 
+     static ContentProcessChild* sSingleton;
+ 
+diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
+--- a/dom/ipc/ContentProcessParent.cpp
++++ b/dom/ipc/ContentProcessParent.cpp
+@@ -43,16 +43,17 @@
+ #include "mozilla/net/NeckoParent.h"
+ 
+ #include "nsIObserverService.h"
+ 
+ #include "nsAutoPtr.h"
+ #include "nsCOMPtr.h"
+ #include "nsServiceManagerUtils.h"
+ #include "nsThreadUtils.h"
++#include "nsChromeRegistry.h"
+ 
+ using namespace mozilla::ipc;
+ using namespace mozilla::net;
+ using mozilla::MonitorAutoEnter;
+ 
+ namespace {
+ PRBool gSingletonDied = PR_FALSE;
+ }
+@@ -125,16 +126,19 @@ ContentProcessParent::DestroyTestShell(T
+ ContentProcessParent::ContentProcessParent()
+     : mMonitor("ContentProcessParent::mMonitor")
+     , mRunToCompletionDepth(0)
+ {
+     NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
+     mSubprocess = new GeckoChildProcessHost(GeckoProcessType_Content);
+     mSubprocess->AsyncLaunch();
+     Open(mSubprocess->GetChannel(), mSubprocess->GetChildProcessHandle());
++
++    nsChromeRegistry* chromeRegistry = nsChromeRegistry::GetService();
++    chromeRegistry->SendRegisteredChrome(this);
+ }
+ 
+ ContentProcessParent::~ContentProcessParent()
+ {
+     NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
+     NS_ASSERTION(gSingleton == this, "More than one singleton?!");
+     gSingletonDied = PR_TRUE;
+     gSingleton = nsnull;
+diff --git a/dom/ipc/Makefile.in b/dom/ipc/Makefile.in
+--- a/dom/ipc/Makefile.in
++++ b/dom/ipc/Makefile.in
+@@ -54,16 +54,17 @@ EXPORTS_NAMESPACES = mozilla mozilla/dom
+ EXPORTS_mozilla = \
+   TabTypes.h \
+   $(NULL)
+ 
+ EXPORTS_mozilla/dom = \
+   ContentProcessChild.h \
+   ContentProcessParent.h \
+   ContentProcessThread.h \
++  TabParent.h \
+   $(NULL)
+ 
+ CPPSRCS = \
+   ContentProcessThread.cpp \
+   ContentProcessParent.cpp \
+   ContentProcessChild.cpp \
+   TabParent.cpp \
+   TabChild.cpp \
+@@ -72,11 +73,12 @@ CPPSRCS = \
+ 
+ include $(topsrcdir)/config/config.mk
+ include $(topsrcdir)/ipc/chromium/chromium-config.mk
+ include $(topsrcdir)/config/rules.mk
+ 
+ LOCAL_INCLUDES += \
+ 		-I$(srcdir)/../../content/base/src \
+ 		-I$(srcdir)/../../content/events/src \
++		-I$(topsrcdir)/chrome/src \
+ 		$(NULL)
+ 
+ DEFINES += -DBIN_SUFFIX='"$(BIN_SUFFIX)"'
+diff --git a/dom/ipc/PContentProcess.ipdl b/dom/ipc/PContentProcess.ipdl
+--- a/dom/ipc/PContentProcess.ipdl
++++ b/dom/ipc/PContentProcess.ipdl
+@@ -36,29 +36,36 @@
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ include protocol "PIFrameEmbedding.ipdl";
+ include protocol "PTestShell.ipdl";
+ include protocol "PNecko.ipdl";
+ 
+ include "mozilla/TabTypes.h";
++include "mozilla/chrome/ChromeTypes.h";
++include "mozilla/chrome/RegistryMessageUtils.h";
++
++using ChromePackage;
++using ChromeResource;
+ 
+ namespace mozilla {
+ namespace dom {
+ 
+ rpc protocol PContentProcess
+ {
+     manages PIFrameEmbedding;
+     manages PTestShell;
+     manages PNecko;
+ 
+ child:
+     PIFrameEmbedding();
+ 
+     PTestShell();
+ 
++    registerChrome(ChromePackage[] packages, ChromeResource[] resources);
++
+ parent:
+     PNecko();
+ };
+ 
+ }
+ }
+diff --git a/dom/ipc/PIFrameEmbedding.ipdl b/dom/ipc/PIFrameEmbedding.ipdl
+--- a/dom/ipc/PIFrameEmbedding.ipdl
++++ b/dom/ipc/PIFrameEmbedding.ipdl
+@@ -101,12 +101,15 @@ child:
+      */
+     activateFrameEvent(nsString aType, bool capture);
+ 
+     loadRemoteScript(nsString aURL);
+ 
+     sendAsyncMessageToChild(nsString aMessage, nsString aJSON);
+ 
+     PDocumentRenderer(PRInt32 x, PRInt32 y, PRInt32 w, PRInt32 h, nsString bgcolor, PRUint32 flags, bool flush);
++
++    registerChromePackage(nsString aPackage, nsString aBaseURI, PRUint32 aFlags);
++    registerChromeResource(nsString aPackage, nsString aResolvedURI);
+ };
+ 
+ }
+ }
+diff --git a/dom/ipc/TabChild.cpp b/dom/ipc/TabChild.cpp
+--- a/dom/ipc/TabChild.cpp
++++ b/dom/ipc/TabChild.cpp
+@@ -49,28 +49,30 @@
+ #include "mozilla/ipc/DocumentRendererChild.h"
+ #include "nsIInterfaceRequestorUtils.h"
+ #include "nsPIDOMWindow.h"
+ #include "nsIDOMWindowUtils.h"
+ #include "nsISupportsImpl.h"
+ #include "nsIWebBrowserFocus.h"
+ #include "nsIDOMEvent.h"
+ #include "nsIPrivateDOMEvent.h"
++#include "nsXULAppAPI.h"
+ #include "nsIComponentManager.h"
+ #include "nsIServiceManager.h"
+ #include "nsIJSRuntimeService.h"
+ #include "nsContentUtils.h"
+ #include "nsIDOMClassInfo.h"
+ #include "nsIXPCSecurityManager.h"
+ #include "nsIJSContextStack.h"
+ #include "nsComponentManagerUtils.h"
+ #include "nsIScriptSecurityManager.h"
+ #include "nsScriptLoader.h"
+ #include "nsPIWindowRoot.h"
+ #include "nsIScriptContext.h"
++#include "nsXULAppAPI.h"
+ 
+ #ifdef MOZ_WIDGET_QT
+ #include <QX11EmbedWidget>
+ #include <QApplication>
+ #include <QGraphicsView>
+ #include <QGraphicsWidget>
+ #endif
+ 
+@@ -480,16 +482,33 @@ TabChild::RecvPDocumentRendererConstruct
+                                       width, height, data);
+     if (!ret)
+         return true; // silently ignore
+ 
+     return PDocumentRendererChild::Send__delete__(__a, width, height, data);
+ }
+ 
+ bool
++TabChild::RecvregisterChromePackage(const nsString& aPackage,
++                                    const nsString& aBaseURI,
++                                    const PRUint32& aFlags)
++{
++	XRE_RegisterChromePackage(aPackage, aBaseURI, aFlags);
++	return true;
++}
++
++bool
++TabChild::RecvregisterChromeResource(const nsString& aPackage,
++                                     const nsString& aResolvedURI)
++{
++	XRE_RegisterChromeResource(aPackage, aResolvedURI);
++	return true;
++}
++
++bool
+ TabChild::RecvactivateFrameEvent(const nsString& aType, const bool& capture)
+ {
+   nsCOMPtr<nsPIDOMWindow> window = do_GetInterface(mWebNav);
+   NS_ENSURE_TRUE(window, true);
+   nsCOMPtr<nsIDOMEventTarget> chromeHandler =
+     do_QueryInterface(window->GetChromeEventHandler());
+   NS_ENSURE_TRUE(chromeHandler, true);
+   nsRefPtr<ContentListener> listener = new ContentListener(this);
+diff --git a/dom/ipc/TabChild.h b/dom/ipc/TabChild.h
+--- a/dom/ipc/TabChild.h
++++ b/dom/ipc/TabChild.h
+@@ -189,16 +189,23 @@ public:
+             const PRUint32& flags,
+             const bool& flush);
+ 
+     nsIWebNavigation* WebNavigation() { return mWebNav; }
+ 
+     JSContext* GetJSContext() { return mCx; }
+ 
+     nsIPrincipal* GetPrincipal() { return mPrincipal; }
++
++    virtual bool RecvregisterChromePackage(const nsString& aPackage,
++                                           const nsString& aBaseURI,
++                                           const PRUint32& aFlags);
++    virtual bool RecvregisterChromeResource(const nsString& aPackage,
++                                            const nsString& aResolvedURI);
++
+ private:
+     bool InitTabChildGlobal();
+ 
+     nsCOMPtr<nsIWebNavigation> mWebNav;
+ 
+     nsCOMPtr<nsIXPConnectJSObjectHolder> mRootGlobal;
+ 
+     JSContext* mCx;
+diff --git a/ipc/glue/IPCMessageUtils.h b/ipc/glue/IPCMessageUtils.h
+--- a/ipc/glue/IPCMessageUtils.h
++++ b/ipc/glue/IPCMessageUtils.h
+@@ -39,16 +39,17 @@
+ #ifndef __IPC_GLUE_IPCMESSAGEUTILS_H__
+ #define __IPC_GLUE_IPCMESSAGEUTILS_H__
+ 
+ #include "chrome/common/ipc_message_utils.h"
+ 
+ #include "prtypes.h"
+ #include "nsStringGlue.h"
+ #include "nsTArray.h"
++#include "gfxMatrix.h"
+ 
+ #ifdef _MSC_VER
+ #pragma warning( disable : 4800 )
+ #endif
+ 
+ namespace IPC {
+ 
+ template<>
+@@ -276,11 +277,51 @@ struct ParamTraits<float>
+   }
+ 
+   static void Log(const paramType& aParam, std::wstring* aLog)
+   {
+     aLog->append(StringPrintf(L"%g", aParam));
+   }
+ };
+ 
++template<>
++struct ParamTraits<gfxMatrix>
++{
++  typedef gfxMatrix paramType;
++
++  static void Write(Message* aMsg, const paramType& aParam)
++  {
++    WriteParam(aMsg, aParam.xx);
++    WriteParam(aMsg, aParam.xy);
++    WriteParam(aMsg, aParam.yx);
++    WriteParam(aMsg, aParam.yy);
++    WriteParam(aMsg, aParam.x0);
++    WriteParam(aMsg, aParam.y0);
++  }
++
++  static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
++  {
++    if (!ReadParam(aMsg, aIter, &aResult->xx))
++      return false;
++    if (!ReadParam(aMsg, aIter, &aResult->xy))
++      return false;
++    if (!ReadParam(aMsg, aIter, &aResult->yx))
++      return false;
++    if (!ReadParam(aMsg, aIter, &aResult->yy))
++      return false;
++    if (!ReadParam(aMsg, aIter, &aResult->x0))
++      return false;
++    if (!ReadParam(aMsg, aIter, &aResult->y0))
++      return false;
++
++    return true;
++  }
++
++  static void Log(const paramType& aParam, std::wstring* aLog)
++  {
++    aLog->append(StringPrintf(L"[[%g %g] [%g %g] [%g %g]]", aParam.xx, aParam.xy, aParam.yx, aParam.yy,
++	  						    aParam.x0, aParam.y0));
++  }
++};
++
+ } /* namespace IPC */
+ 
+ #endif /* __IPC_GLUE_IPCMESSAGEUTILS_H__ */
+diff --git a/netwerk/protocol/res/src/nsResProtocolHandler.cpp b/netwerk/protocol/res/src/nsResProtocolHandler.cpp
+--- a/netwerk/protocol/res/src/nsResProtocolHandler.cpp
++++ b/netwerk/protocol/res/src/nsResProtocolHandler.cpp
+@@ -203,16 +203,23 @@ nsResProtocolHandler::Init()
+     // but once I finish multiple chrome registration I'm not sure that it is needed
+ 
+     // XXX dveditz: resource://pchrome/ defeats profile directory salting
+     // if web content can load it. Tread carefully.
+ 
+     return rv;
+ }
+ 
++void
++nsResProtocolHandler::EnumerateSubstitutions(SubstitutionTable::EnumReadFunction enumFunc,
++                                             void* userArg)
++{
++    mSubstitutions.EnumerateRead(enumFunc, userArg);
++}
++
+ //----------------------------------------------------------------------------
+ // nsResProtocolHandler::nsISupports
+ //----------------------------------------------------------------------------
+ 
+ NS_IMPL_THREADSAFE_ISUPPORTS3(nsResProtocolHandler,
+                               nsIResProtocolHandler,
+                               nsIProtocolHandler,
+                               nsISupportsWeakReference)
+diff --git a/netwerk/protocol/res/src/nsResProtocolHandler.h b/netwerk/protocol/res/src/nsResProtocolHandler.h
+--- a/netwerk/protocol/res/src/nsResProtocolHandler.h
++++ b/netwerk/protocol/res/src/nsResProtocolHandler.h
+@@ -54,27 +54,32 @@ public:
+     nsResURL() : nsStandardURL(PR_TRUE) {}
+     virtual nsStandardURL* StartClone();
+     virtual nsresult EnsureFile();
+     NS_IMETHOD GetClassIDNoAlloc(nsCID *aCID);
+ };
+ 
+ class nsResProtocolHandler : public nsIResProtocolHandler, public nsSupportsWeakReference
+ {
++private:
++    typedef nsInterfaceHashtable<nsCStringHashKey,nsIURI> SubstitutionTable;
+ public:
+     NS_DECL_ISUPPORTS
+     NS_DECL_NSIPROTOCOLHANDLER
+     NS_DECL_NSIRESPROTOCOLHANDLER
+ 
+     nsResProtocolHandler();
+     virtual ~nsResProtocolHandler();
+ 
+     nsresult Init();
+ 
++    void EnumerateSubstitutions(SubstitutionTable::EnumReadFunction enumFunc,
++                                void* userArg);
++
+ private:
+     nsresult AddSpecialDir(const char* aSpecialDir, const nsACString& aSubstitution);
+-    nsInterfaceHashtable<nsCStringHashKey,nsIURI> mSubstitutions;
++    SubstitutionTable mSubstitutions;
+     nsCOMPtr<nsIIOService> mIOService;
+ 
+     friend class nsResURL;
+ };
+ 
+ #endif /* nsResProtocolHandler_h___ */
+diff --git a/toolkit/xre/Makefile.in b/toolkit/xre/Makefile.in
+--- a/toolkit/xre/Makefile.in
++++ b/toolkit/xre/Makefile.in
+@@ -176,16 +176,17 @@ endif
+ 
+ include $(topsrcdir)/config/config.mk
+ include $(topsrcdir)/ipc/chromium/chromium-config.mk
+ include $(topsrcdir)/config/rules.mk
+ 
+ LOCAL_INCLUDES += \
+   -I$(topsrcdir)/dom/ipc \
+   -I$(topsrcdir)/toolkit/crashreporter \
++  -I$(topsrcdir)/chrome/src \
+   $(NULL)
+ 
+ ifdef BUILD_STATIC_LIBS
+ export::
+ 	@$(PYTHON) $(MOZILLA_DIR)/config/buildlist.py $(FINAL_LINK_COMP_NAMES) Apprunner
+ endif
+ 
+ LOCAL_INCLUDES += \
+diff --git a/toolkit/xre/nsEmbedFunctions.cpp b/toolkit/xre/nsEmbedFunctions.cpp
+--- a/toolkit/xre/nsEmbedFunctions.cpp
++++ b/toolkit/xre/nsEmbedFunctions.cpp
+@@ -50,16 +50,18 @@
+ 
+ #include "nsIAppShell.h"
+ #include "nsIAppStartupNotifier.h"
+ #include "nsIDirectoryService.h"
+ #include "nsILocalFile.h"
+ #include "nsIToolkitChromeRegistry.h"
+ #include "nsIToolkitProfile.h"
+ 
++#include "nsChromeRegistry.h"
++
+ #if defined(OS_LINUX)
+ #  define XP_LINUX
+ #endif
+ 
+ #ifdef XP_WIN
+ #include <process.h>
+ #endif
+ 
+@@ -85,16 +87,17 @@
+ #include "mozilla/ipc/GeckoChildProcessHost.h"
+ #include "mozilla/ipc/BrowserProcessSubThread.h"
+ #include "ScopedXREEmbed.h"
+ 
+ #include "mozilla/plugins/PluginThreadChild.h"
+ #include "mozilla/dom/ContentProcessThread.h"
+ #include "mozilla/dom/ContentProcessParent.h"
+ #include "mozilla/dom/ContentProcessChild.h"
++#include "mozilla/dom/TabParent.h"
+ 
+ #include "mozilla/ipc/TestShellParent.h"
+ #include "mozilla/ipc/XPCShellEnvironment.h"
+ #include "mozilla/Monitor.h"
+ 
+ #ifdef MOZ_IPDL_TESTS
+ #include "mozilla/_ipdltest/IPDLUnitTests.h"
+ #include "mozilla/_ipdltest/IPDLUnitTestThreadChild.h"
+@@ -227,16 +230,66 @@ XRE_TermEmbedding()
+                "XRE_TermEmbedding without XRE_InitEmbedding");
+ 
+   gDirServiceProvider->DoShutdown();
+   NS_ShutdownXPCOM(nsnull);
+   delete [] sCombined;
+   delete gDirServiceProvider;
+ }
+ 
++static nsresult
++GetChromeRegistry(nsChromeRegistry* *aResult)
++{
++  if(!nsChromeRegistry::gChromeRegistry)
++  {
++    // We don't actually want this ref, we just want the service to
++    // initialize if it hasn't already.
++    nsCOMPtr<nsIChromeRegistry> reg(do_GetService(NS_CHROMEREGISTRY_CONTRACTID));
++    NS_ENSURE_TRUE(nsChromeRegistry::gChromeRegistry, NS_ERROR_FAILURE);
++  }
++  *aResult = nsChromeRegistry::gChromeRegistry;
++  return NS_OK;
++}
++
++nsresult
++XRE_SendParentChromeRegistry(mozilla::dom::TabParent* aParent)
++{
++  nsChromeRegistry* chromeRegistry = nsnull;
++  nsresult rv = GetChromeRegistry(&chromeRegistry);
++  NS_ENSURE_SUCCESS(rv, rv);
++
++  chromeRegistry->SendRegisteredPackages(aParent);
++  return NS_OK;
++}
++
++nsresult
++XRE_RegisterChromePackage(const nsString& aPackage,
++                          const nsString& aBaseURI,
++                          const PRUint32& aFlags)
++{
++  nsChromeRegistry* chromeRegistry = nsnull;
++  nsresult rv = GetChromeRegistry(&chromeRegistry);
++  NS_ENSURE_SUCCESS(rv, rv);
++
++  chromeRegistry->RegisterPackage(aPackage, aBaseURI, aFlags);
++  return NS_OK;
++}
++
++nsresult
++XRE_RegisterChromeResource(const nsString& aPackage,
++                           const nsString& aResolvedURI)
++{
++  nsChromeRegistry* chromeRegistry = nsnull;
++  nsresult rv = GetChromeRegistry(&chromeRegistry);
++  NS_ENSURE_SUCCESS(rv, rv);
++
++  chromeRegistry->RegisterResource(aPackage, aResolvedURI);
++  return NS_OK;
++}
++
+ const char*
+ XRE_ChildProcessTypeToString(GeckoProcessType aProcessType)
+ {
+   return (aProcessType < GeckoProcessType_End) ?
+     kGeckoProcessTypeString[aProcessType] : nsnull;
+ }
+ 
+ GeckoProcessType
+diff --git a/xpcom/build/nsXULAppAPI.h b/xpcom/build/nsXULAppAPI.h
+--- a/xpcom/build/nsXULAppAPI.h
++++ b/xpcom/build/nsXULAppAPI.h
+@@ -408,16 +408,36 @@ XRE_API(nsresult,
+  *
+  * @param aINIFile The INI file to parse
+  * @param aAppData The nsXREAppData structure to fill.
+  */
+ XRE_API(nsresult,
+         XRE_ParseAppData, (nsILocalFile* aINIFile,
+                            nsXREAppData *aAppData))
+ 
++namespace mozilla {
++namespace dom {
++  class TabParent;
++}
++}
++
++class nsString;
++
++XRE_API(nsresult,
++        XRE_SendParentChromeRegistry, (mozilla::dom::TabParent* aParent))
++
++XRE_API(nsresult,
++        XRE_RegisterChromePackage, (const nsString& aPackage,
++                                    const nsString& aBaseURI,
++                                    const PRUint32& aFlags))
++
++XRE_API(nsresult,
++        XRE_RegisterChromeResource, (const nsString& aPackage,
++                                     const nsString& aResolvedURI))
++
+ /**
+  * Free a nsXREAppData structure that was allocated with XRE_CreateAppData.
+  */
+ XRE_API(void,
+         XRE_FreeAppData, (nsXREAppData *aAppData))
+ 
+ enum GeckoProcessType {
+   GeckoProcessType_Default = 0,

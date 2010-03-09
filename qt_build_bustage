@@ -1,0 +1,24 @@
+diff --git a/content/base/src/Makefile.in b/content/base/src/Makefile.in
+--- a/content/base/src/Makefile.in
++++ b/content/base/src/Makefile.in
+@@ -158,16 +158,20 @@ EXTRA_COMPONENTS = \
+ EXTRA_JS_MODULES = \
+ 		CSPUtils.jsm \
+ 		$(NULL)
+ 
+ include $(topsrcdir)/config/config.mk
+ include $(topsrcdir)/ipc/chromium/chromium-config.mk
+ include $(topsrcdir)/config/rules.mk
+ 
++ifdef MOZ_ENABLE_QT
++CXXFLAGS          += $(MOZ_QT_CFLAGS)
++endif
++
+ INCLUDES	+= \
+ 		-I$(srcdir)/../../events/src \
+ 		-I$(srcdir)/../../xml/content/src \
+ 		-I$(srcdir)/../../../layout/xul/base/src \
+ 		-I$(srcdir)/../../xul/content/src \
+ 		-I$(srcdir)/../../html/content/src \
+ 		-I$(srcdir)/../../base/src \
+ 		-I$(srcdir)/../../xbl/src \
