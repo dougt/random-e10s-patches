@@ -6,7 +6,5 @@ use-offscreen-surface-with-shmem
 fire-event-on-async-canvas-draw
 bug_545237
 qt_build_bustage
-imacro_js_bustage_in_sbox
 QT_IME
 DocumentRendererShmemChild_bustage
-
