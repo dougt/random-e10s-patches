@@ -1,0 +1,140 @@
+diff --git a/gfx/thebes/src/gfxQtPlatform.cpp b/gfx/thebes/src/gfxQtPlatform.cpp
+--- a/gfx/thebes/src/gfxQtPlatform.cpp
++++ b/gfx/thebes/src/gfxQtPlatform.cpp
+@@ -190,44 +190,51 @@ gfxQtPlatform::CreateOffscreenSurface(co
+     nsRefPtr<gfxASurface> newSurface = nsnull;
+ 
+     if (mRenderMode == RENDER_QPAINTER) {
+       newSurface = new gfxQPainterSurface(size, gfxASurface::ContentFromFormat(imageFormat));
+       return newSurface.forget();
+     }
+ 
+     if (mRenderMode == RENDER_SHARED_IMAGE) {
++      if (imageFormat == gfxASurface::ImageFormatRGB24 && QX11Info().depth() == 16)
++          imageFormat = gfxASurface::ImageFormatRGB16;
+       newSurface = new gfxImageSurface(size, imageFormat);
+       return newSurface.forget();
+     }
+ 
+ #ifdef MOZ_X11
+     int xrenderFormatID = -1;
+     switch (imageFormat) {
+         case gfxASurface::ImageFormatARGB32:
+             xrenderFormatID = PictStandardARGB32;
+             break;
+         case gfxASurface::ImageFormatRGB24:
+             xrenderFormatID = PictStandardRGB24;
+             break;
++        case gfxASurface::ImageFormatRGB16:
++            break;
+         case gfxASurface::ImageFormatA8:
+             xrenderFormatID = PictStandardA8;
+             break;
+         case gfxASurface::ImageFormatA1:
+             xrenderFormatID = PictStandardA1;
+             break;
+         default:
+             return nsnull;
+     }
+ 
+     // XXX we really need a different interface here, something that passes
+     // in more context, including the display and/or target surface type that
+     // we should try to match
+-    XRenderPictFormat* xrenderFormat =
+-        XRenderFindStandardFormat(QX11Info().display(), xrenderFormatID);
++    XRenderPictFormat* xrenderFormat = nsnull;
++    if ((xrenderFormatID == PictStandardRGB24 && QX11Info().depth() == 16) || xrenderFormatID == -1)
++        xrenderFormat = XRenderFindVisualFormat(QX11Info().display(), (Visual*)QX11Info().visual());
++    else
++        xrenderFormat = XRenderFindStandardFormat(QX11Info().display(), xrenderFormatID);
+ 
+     newSurface = new gfxXlibSurface((Display*)QX11Info().display(),
+                                     xrenderFormat,
+                                     size);
+ #endif
+ 
+     if (newSurface) {
+         gfxContext ctx(newSurface);
+diff --git a/gfx/thebes/src/gfxSharedImageSurface.cpp b/gfx/thebes/src/gfxSharedImageSurface.cpp
+--- a/gfx/thebes/src/gfxSharedImageSurface.cpp
++++ b/gfx/thebes/src/gfxSharedImageSurface.cpp
+@@ -73,16 +73,19 @@ already_AddRefed<gfxASurface>
+ gfxSharedImageSurface::getASurface(void)
+ {
+     NS_ENSURE_TRUE(mData, NULL);
+ 
+     gfxASurface::gfxImageFormat imageFormat = gfxASurface::ImageFormatRGB24;
+     if (mDepth == 32)
+         imageFormat = gfxASurface::ImageFormatARGB32;
+ 
++    if (mDepth == 16)
++        imageFormat = gfxASurface::ImageFormatRGB16;
++
+     gfxASurface* result = new gfxImageSurface(mData, mSize, mStride, imageFormat);
+     NS_IF_ADDREF(result);
+     return result;
+ }
+ 
+ #ifdef MOZ_WIDGET_QT
+ static unsigned int
+ getSystemDepth()
+@@ -183,16 +186,18 @@ gfxSharedImageSurface::CreateInternal(in
+ 
+ bool
+ gfxSharedImageSurface::ComputeFormat()
+ {
+     if (mDepth == 32)
+         mFormat = ImageFormatARGB32;
+     if (mDepth == 24)
+         mFormat = ImageFormatRGB24;
++    if (mDepth == 16)
++        mFormat = ImageFormatRGB16;
+     else {
+         NS_WARNING("Unknown depth specified to gfxSharedImageSurface!");
+         mFormat = ImageFormatUnknown;
+         return false;
+     }
+ 
+     return true;
+ }
+@@ -200,16 +205,18 @@ gfxSharedImageSurface::ComputeFormat()
+ bool
+ gfxSharedImageSurface::ComputeDepth()
+ {
+     mDepth = 0;
+     if (mFormat == ImageFormatARGB32)
+         mDepth = 32;
+     else if (mFormat == ImageFormatRGB24)
+         mDepth = 24;
++    else if (mFormat == ImageFormatRGB16)
++        mDepth = 16;
+     else {
+         NS_WARNING("Unknown format specified to gfxSharedImageSurface!");
+         return false;
+     }
+ 
+     return true;
+ }
+ 
+diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
+--- a/widget/src/qt/nsWindow.cpp
++++ b/widget/src/qt/nsWindow.cpp
+@@ -201,16 +201,18 @@ nsWindow::nsWindow()
+ static inline gfxASurface::gfxImageFormat
+ _depth_to_gfximage_format(PRInt32 aDepth)
+ {
+     switch (aDepth) {
+     case 32:
+         return gfxASurface::ImageFormatARGB32;
+     case 24:
+         return gfxASurface::ImageFormatRGB24;
++    case 16:
++        return gfxASurface::ImageFormatRGB16;
+     default:
+         return gfxASurface::ImageFormatUnknown;
+     }
+ }
+ 
+ static void
+ FreeOffScreenBuffers(void)
+ {
