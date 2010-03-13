@@ -1,8 +1,8 @@
 diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
 --- a/widget/src/qt/nsWindow.cpp
 +++ b/widget/src/qt/nsWindow.cpp
-@@ -172,17 +172,21 @@ nsWindow::nsWindow()
- 
+@@ -179,17 +179,21 @@ nsWindow::nsWindow()
+ #endif // qt version check
      mWidget              = nsnull;
      mIsVisible           = PR_FALSE;
      mActivatePending     = PR_FALSE;
@@ -24,7 +24,7 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
      }
  
      memset(mKeyDownFlags, 0, sizeof(mKeyDownFlags));
-@@ -429,17 +433,17 @@ nsWindow::SetModal(PRBool aModal)
+@@ -436,17 +440,17 @@ nsWindow::SetModal(PRBool aModal)
          mWidget->setModal(aModal);
  
      return NS_OK;
@@ -43,7 +43,7 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
  {
      if (mWidget) {
          PRInt32 screenWidth  = QApplication::desktop()->width();
-@@ -983,16 +987,19 @@ nsWindow::DoPaint(QPainter* aPainter, co
+@@ -990,16 +994,19 @@ nsWindow::DoPaint(QPainter* aPainter, co
      if (aOption)
          r = aOption->exposedRect;
      else
@@ -63,7 +63,7 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
      if (renderMode != gfxQtPlatform::RENDER_QPAINTER)
          if (!UpdateOffScreenBuffers(QSize(r.width(), r.height()), QX11Info().depth()))
              return nsEventStatus_eIgnore;
-@@ -1698,40 +1705,39 @@ nsWindow::SetWindowClass(const nsAString
+@@ -1801,40 +1808,39 @@ nsWindow::SetWindowClass(const nsAString
  }
  
  void
@@ -110,7 +110,7 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
  NS_IMETHODIMP
  nsWindow::SetHasTransparentBackground(PRBool aTransparent)
  {
-@@ -2146,40 +2152,66 @@ nsWindow::Show(PRBool aState)
+@@ -2244,40 +2250,66 @@ nsWindow::Show(PRBool aState)
  {
      LOG(("nsWindow::Show [%p] state %d\n", (void *)this, aState));
  
@@ -146,19 +146,23 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
          return NS_OK;
  
 -    mWidget->resize(aWidth, aHeight);
+-
+-    if (mIsTopLevel) {
+-        GetViewWidget()->resize(aWidth,aHeight);
 +    if (mIsShown) {
 +        if (mIsTopLevel || mNeedsShow)
 +            NativeResize(mBounds.x, mBounds.y,
 +                         mBounds.width, mBounds.height, aRepaint);
 +        else
 +            NativeResize(mBounds.width, mBounds.height, aRepaint);
- 
--    if (mIsTopLevel) {
--        GetViewWidget()->resize(aWidth,aHeight);
++
 +        // Does it need to be shown because it was previously insane?
 +        if (mNeedsShow)
 +            NativeShow(PR_TRUE);
-+    }
+     }
+-
+-    if (aRepaint)
+-        mWidget->update();
 +    else if (mListenForResizes) {
 +        // For widgets that we listen for resizes for (widgets created
 +        // with native parents) we apparently _always_ have to resize.  I
@@ -167,10 +171,8 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
 +    }
 +    else {
 +        mNeedsResize = PR_TRUE;
-     }
- 
--    if (aRepaint)
--        mWidget->update();
++    }
++
 +    // synthesize a resize event if this isn't a toplevel
 +    if (mIsTopLevel || mListenForResizes) {
 +        nsIntRect rect(mBounds.x, mBounds.y, aWidth, aHeight);
@@ -185,7 +187,7 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
  nsWindow::Resize(PRInt32 aX, PRInt32 aY, PRInt32 aWidth, PRInt32 aHeight,
                   PRBool aRepaint)
  {
-@@ -2188,24 +2220,44 @@ nsWindow::Resize(PRInt32 aX, PRInt32 aY,
+@@ -2286,24 +2318,44 @@ nsWindow::Resize(PRInt32 aX, PRInt32 aY,
      mBounds.width = aWidth;
      mBounds.height = aHeight;
  
@@ -206,7 +208,10 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
 +        // Does it need to be shown because it was previously insane?
 +        if (mNeedsShow)
 +            NativeShow(PR_TRUE);
-+    }
+     }
+-
+-    if (aRepaint)
+-        mWidget->update();
 +    // If the widget hasn't been shown, mark the widget as needing to be
 +    // resized before it is shown
 +    else if (mListenForResizes) {
@@ -218,10 +223,8 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
 +    else {
 +        mNeedsResize = PR_TRUE;
 +        mNeedsMove = PR_TRUE;
-     }
- 
--    if (aRepaint)
--        mWidget->update();
++    }
++
 +    if (mIsTopLevel || mListenForResizes) {
 +        // synthesize a resize event
 +        nsIntRect rect(aX, aY, aWidth, aHeight);
@@ -239,7 +242,7 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
 diff --git a/widget/src/qt/nsWindow.h b/widget/src/qt/nsWindow.h
 --- a/widget/src/qt/nsWindow.h
 +++ b/widget/src/qt/nsWindow.h
-@@ -349,16 +349,21 @@ private:
+@@ -359,16 +359,21 @@ private:
  
      void ClearKeyDownFlag(PRUint32 aKeyCode) {
          PRUint32 mask;
@@ -255,9 +258,9 @@ diff --git a/widget/src/qt/nsWindow.h b/widget/src/qt/nsWindow.h
 +
      // Remember dirty area caused by ::Scroll
      QRegion mDirtyScrollArea;
- };
  
- class nsChildWindow : public nsWindow
- {
- public:
-     nsChildWindow();
+ #if (QT_VERSION >= QT_VERSION_CHECK(4, 6, 0))
+     double mTouchPointDistance;
+     double mLastPinchDistance;
+     PRBool mMouseEventsDisabled;
+  #endif
