@@ -8,4 +8,5 @@ bug_545237_ContentProcessParent_singleton
 bug_551431_resize_optimizations_qt
 bug_545632_16bpp
 bug_545632_16bpp_qt
-bug-516728.diff
+bug_516728_is_visited
+bug_XXXXXX_build_on_qt_4_5
