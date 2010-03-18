@@ -43,7 +43,7 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
  {
      if (mWidget) {
          PRInt32 screenWidth  = QApplication::desktop()->width();
-@@ -990,16 +994,19 @@ nsWindow::DoPaint(QPainter* aPainter, co
+@@ -1007,16 +1011,19 @@ nsWindow::DoPaint(QPainter* aPainter, co
      if (aOption)
          r = aOption->exposedRect;
      else
@@ -63,7 +63,7 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
      if (renderMode != gfxQtPlatform::RENDER_QPAINTER)
          if (!UpdateOffScreenBuffers(QSize(r.width(), r.height()), QX11Info().depth()))
              return nsEventStatus_eIgnore;
-@@ -1801,40 +1808,39 @@ nsWindow::SetWindowClass(const nsAString
+@@ -1818,34 +1825,33 @@ nsWindow::SetWindowClass(const nsAString
  }
  
  void
@@ -100,17 +100,10 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
  void
  nsWindow::NativeShow(PRBool aAction)
  {
--    if (aAction == PR_TRUE)
-+    if (aAction)
-         mWidget->show();
-     else
-         mWidget->hide();
- }
- 
- NS_IMETHODIMP
- nsWindow::SetHasTransparentBackground(PRBool aTransparent)
- {
-@@ -2244,40 +2250,66 @@ nsWindow::Show(PRBool aState)
+     if (aAction) {
+         QWidget *widget = GetViewWidget();
+         if (widget && !widget->isVisible())
+@@ -2273,42 +2279,66 @@ nsWindow::Show(PRBool aState)
  {
      LOG(("nsWindow::Show [%p] state %d\n", (void *)this, aState));
  
@@ -122,6 +115,8 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
 -    mWidget->setVisible(aState);
 -    if (mWindowType == eWindowType_popup && aState)
 -        Resize(mBounds.x, mBounds.y, mBounds.width, mBounds.height, PR_FALSE);
+-
+-    return NS_OK;
 +    if (aState) {
 +        if (mNeedsMove) {
 +            NativeResize(mBounds.x, mBounds.y, mBounds.width, mBounds.height,
@@ -132,8 +127,8 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
 +    }
 +
 +    NativeShow(aState);
- 
-     return NS_OK;
++ 
++   return NS_OK;
  }
  
  NS_IMETHODIMP
@@ -148,7 +143,9 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
 -    mWidget->resize(aWidth, aHeight);
 -
 -    if (mIsTopLevel) {
--        GetViewWidget()->resize(aWidth,aHeight);
+-        QWidget *widget = GetViewWidget();
+-        if (widget)
+-            widget->resize(aWidth, aHeight);
 +    if (mIsShown) {
 +        if (mIsTopLevel || mNeedsShow)
 +            NativeResize(mBounds.x, mBounds.y,
@@ -187,7 +184,7 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
  nsWindow::Resize(PRInt32 aX, PRInt32 aY, PRInt32 aWidth, PRInt32 aHeight,
                   PRBool aRepaint)
  {
-@@ -2286,24 +2318,44 @@ nsWindow::Resize(PRInt32 aX, PRInt32 aY,
+@@ -2317,27 +2347,44 @@ nsWindow::Resize(PRInt32 aX, PRInt32 aY,
      mBounds.width = aWidth;
      mBounds.height = aHeight;
  
@@ -199,7 +196,9 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
 -    mWidget->setGeometry(aX, aY, aWidth, aHeight);
 -
 -    if (mIsTopLevel) {
--        GetViewWidget()->resize(aWidth,aHeight);
+-        QWidget *widget = GetViewWidget();
+-        if (widget)
+-            widget->resize(aWidth, aHeight);
 +    // Has this widget been set to visible?
 +    if (mIsShown) {
 +        // Are the bounds sane?
@@ -212,6 +211,7 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
 -
 -    if (aRepaint)
 -        mWidget->update();
+-
 +    // If the widget hasn't been shown, mark the widget as needing to be
 +    // resized before it is shown
 +    else if (mListenForResizes) {
@@ -229,9 +229,8 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
 +        // synthesize a resize event
 +        nsIntRect rect(aX, aY, aWidth, aHeight);
 +        nsEventStatus status;
-+        DispatchResizeEvent(rect, status);
++       DispatchResizeEvent(rect, status);
 +    }
- 
      return NS_OK;
  }
  
@@ -239,6 +238,7 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
  nsWindow::Enable(PRBool aState)
  {
      mEnabled = aState;
+ 
 diff --git a/widget/src/qt/nsWindow.h b/widget/src/qt/nsWindow.h
 --- a/widget/src/qt/nsWindow.h
 +++ b/widget/src/qt/nsWindow.h

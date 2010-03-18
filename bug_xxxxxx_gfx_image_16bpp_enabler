@@ -1,0 +1,84 @@
+diff --git a/widget/src/qt/nsNativeThemeQt.cpp b/widget/src/qt/nsNativeThemeQt.cpp
+--- a/widget/src/qt/nsNativeThemeQt.cpp
++++ b/widget/src/qt/nsNativeThemeQt.cpp
+@@ -100,16 +100,18 @@ static inline QRect qRectInPixels(const 
+ static inline QImage::Format
+ _qimage_from_gfximage_format (gfxASurface::gfxImageFormat aFormat)
+ {
+     switch (aFormat) {
+     case gfxASurface::ImageFormatARGB32:
+         return QImage::Format_ARGB32_Premultiplied;
+     case gfxASurface::ImageFormatRGB24:
+         return QImage::Format_RGB32;
++    case gfxASurface::ImageFormatRGB16:
++        return QImage::Format_RGB16;
+     case gfxASurface::ImageFormatA8:
+         return QImage::Format_Indexed8;
+     case gfxASurface::ImageFormatA1:
+ #ifdef WORDS_BIGENDIAN
+         return QImage::Format_Mono;
+ #else
+         return QImage::Format_MonoLSB;
+ #endif
+diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
+--- a/widget/src/qt/nsWindow.cpp
++++ b/widget/src/qt/nsWindow.cpp
+@@ -663,16 +663,18 @@ nsWindow::Invalidate(const nsIntRect &aR
+                      PRBool        aIsSynchronous)
+ {
+     LOGDRAW(("Invalidate (rect) [%p,%p]: %d %d %d %d (sync: %d)\n", (void *)this,
+              (void*)mWidget,aRect.x, aRect.y, aRect.width, aRect.height, aIsSynchronous));
+ 
+     if (!mWidget)
+         return NS_OK;
+ 
++    mDirtyScrollArea = mDirtyScrollArea.united(QRect(aRect.x, aRect.y, aRect.width, aRect.height));
++
+     mWidget->update(aRect.x, aRect.y, aRect.width, aRect.height);
+ 
+     // QGraphicsItems cannot trigger a repaint themselves, so we start it on the view
+     if (aIsSynchronous) {
+         QWidget *widget = GetViewWidget();
+         if (widget)
+             widget->repaint();
+     }
+@@ -1013,19 +1015,16 @@ nsWindow::DoPaint(QPainter* aPainter, co
+     if (aOption)
+         r = aOption->exposedRect;
+     else
+         r = mWidget->boundingRect();
+ 
+     if (r.isEmpty())
+         return nsEventStatus_eIgnore;
+ 
+-    if (r.isEmpty())
+-        return nsEventStatus_eIgnore;
+-
+     if (!mDirtyScrollArea.isEmpty())
+         mDirtyScrollArea = QRegion();
+ 
+     gfxQtPlatform::RenderMode renderMode = gfxQtPlatform::GetPlatform()->GetRenderMode();
+     // Prepare offscreen buffers if RenderMode Xlib or Image
+     if (renderMode != gfxQtPlatform::RENDER_QPAINTER)
+         if (!UpdateOffScreenBuffers(QSize(r.width(), r.height()), QX11Info().depth()))
+             return nsEventStatus_eIgnore;
+@@ -1116,17 +1115,18 @@ nsWindow::DoPaint(QPainter* aPainter, co
+         if (gBufferPixmap->handle())
+             aPainter->drawPixmap(QPoint(rect.x, rect.y), *gBufferPixmap,
+                                  QRect(0, 0, rect.width, rect.height));
+         else {
+             QImage img(gBufferImage->Data(),
+                        gBufferImage->Width(),
+                        gBufferImage->Height(),
+                        gBufferImage->Stride(),
+-                       QImage::Format_RGB32);
++                       gBufferImage->Format() == gfxASurface::ImageFormatRGB16 ?
++                           QImage::Format_RGB16 : QImage::Format_RGB32);
+             aPainter->drawImage(QPoint(rect.x, rect.y), img,
+                                 QRect(0, 0, rect.width, rect.height));
+         }
+     }
+ 
+     ctx = nsnull;
+     targetSurface = nsnull;
+ 
