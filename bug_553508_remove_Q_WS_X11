@@ -1,0 +1,337 @@
+diff --git a/gfx/cairo/cairo/src/cairo-qpainter-surface.cpp b/gfx/cairo/cairo/src/cairo-qpainter-surface.cpp
+--- a/gfx/cairo/cairo/src/cairo-qpainter-surface.cpp
++++ b/gfx/cairo/cairo/src/cairo-qpainter-surface.cpp
+@@ -116,17 +116,17 @@ typedef struct {
+ 
+     bool has_clipping;
+     // if this is true, calls to intersect_clip_path won't
+     // update the clip_bounds rect
+     bool no_update_clip_bounds;
+ 
+     cairo_bool_t supports_porter_duff;
+ 
+-#if defined(Q_WS_X11) && defined(CAIRO_HAS_XLIB_XRENDER_SURFACE)
++#if defined(CAIRO_HAS_XLIB_XRENDER_SURFACE)
+     /* temporary, so that we can share the xlib surface's glyphs code */
+     bool xlib_has_clipping;
+     cairo_surface_t *xlib_equiv;
+     QRect xlib_clip_bounds;
+     int xlib_clip_serial;
+     QPoint redir_offset;
+ #endif
+     
+@@ -433,17 +433,17 @@ _cairo_qpainter_surface_finish (void *ab
+     if (qs->image || qs->pixmap)
+         delete qs->p;
+     else
+         qs->p->restore();
+ 
+     if (qs->image_equiv)
+         cairo_surface_destroy ((cairo_surface_t*) qs->image_equiv);
+ 
+-#if defined(Q_WS_X11) && defined(CAIRO_HAS_XLIB_XRENDER_SURFACE)
++#if defined(CAIRO_HAS_XLIB_XRENDER_SURFACE)
+     if (qs->xlib_equiv)
+         cairo_surface_destroy (qs->xlib_equiv);
+ #endif
+ 
+     if (qs->image)
+         delete qs->image;
+ 
+     if (qs->pixmap)
+@@ -1360,17 +1360,17 @@ _cairo_qpainter_surface_show_glyphs (voi
+                                      int num_glyphs,
+                                      cairo_scaled_font_t *scaled_font,
+                                      int *remaining_glyphs,
+                                      cairo_rectangle_int_t * extends)
+ {
+     Q_UNUSED(extends);
+     cairo_qpainter_surface_t *qs = (cairo_qpainter_surface_t *) abstract_surface;
+ 
+-#if defined(Q_WS_X11) && defined(CAIRO_HAS_XLIB_XRENDER_SURFACE)
++#if defined(CAIRO_HAS_XLIB_XRENDER_SURFACE)
+     /* If we have an equivalent X surface, let the xlib surface handle this
+      * until we figure out how to do this natively with Qt.
+      */
+     if (qs->xlib_equiv) {
+ 
+         D(fprintf(stderr, "q[%p] show_glyphs (x11 equiv) op:%s nglyphs: %d\n", abstract_surface, _opstr(op), num_glyphs));
+ 
+         for (int i = 0; i < num_glyphs; i++) {
+@@ -1582,17 +1582,17 @@ static const cairo_surface_backend_t cai
+     NULL, /* reset */
+     NULL, /* fill_stroke */
+     NULL, /* create_solid_pattern_surface */
+     NULL, /* can_repaint_solid_pattern_surface */
+     NULL, /* has_show_text_glyphs */
+     NULL, /* show_text_glyphs */
+ };
+ 
+-#if defined(Q_WS_X11) && defined(CAIRO_HAS_XLIB_XRENDER_SURFACE)
++#if defined(CAIRO_HAS_XLIB_XRENDER_SURFACE)
+ void
+ _cairo_qpainter_create_xlib_surface (cairo_qpainter_surface_t *qs)
+ {
+     Drawable d = None;
+     QX11Info xinfo;
+     int width, height;
+ 
+     if (!qs->p)
+@@ -1656,17 +1656,17 @@ cairo_qpainter_surface_create (QPainter 
+     else
+         qs->supports_porter_duff = FALSE;
+ 
+     // Save so that we can always get back to the original state
+     qs->p->save();
+ 
+     qs->window = painter->window();
+ 
+-#if defined(Q_WS_X11) && defined(CAIRO_HAS_XLIB_XRENDER_SURFACE)
++#if defined(CAIRO_HAS_XLIB_XRENDER_SURFACE)
+     _cairo_qpainter_create_xlib_surface (qs);
+ #endif
+ 
+     D(fprintf(stderr, "qpainter_surface_create: window: [%d %d %d %d] pd:%d\n",
+               qs->window.x(), qs->window.y(), qs->window.width(), qs->window.height(),
+               qs->supports_porter_duff));
+ 
+     return &qs->base;
+@@ -1743,17 +1743,17 @@ cairo_qpainter_surface_create_with_qpixm
+ 
+     if (!pixmap->isNull()) {
+         qs->p = new QPainter(pixmap);
+         qs->supports_porter_duff = qs->p->paintEngine()->hasFeature(QPaintEngine::PorterDuff);
+     }
+ 
+     qs->window = QRect(0, 0, width, height);
+ 
+-#if defined(Q_WS_X11) && defined(CAIRO_HAS_XLIB_XRENDER_SURFACE)
++#if defined(CAIRO_HAS_XLIB_XRENDER_SURFACE)
+     _cairo_qpainter_create_xlib_surface (qs);
+ #endif
+ 
+     D(fprintf(stderr, "qpainter_surface_create: qpixmap: [%d %d %d %d] pd:%d\n",
+               qs->window.x(), qs->window.y(), qs->window.width(), qs->window.height(),
+               qs->supports_porter_duff));
+ 
+     return &qs->base;
+diff --git a/widget/src/qt/nsIdleServiceQt.cpp b/widget/src/qt/nsIdleServiceQt.cpp
+--- a/widget/src/qt/nsIdleServiceQt.cpp
++++ b/widget/src/qt/nsIdleServiceQt.cpp
+@@ -32,25 +32,23 @@
+  * use your version of this file under the terms of the MPL, indicate your
+  * decision by deleting the provisions above and replace them with the notice
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
++#include <QX11Info>
++
+ #include "nsIdleServiceQt.h"
+ #include "nsIServiceManager.h"
+ #include "nsDebug.h"
+ #include "prlink.h"
+ 
+-
+-#ifdef Q_WS_X11
+-#include <QX11Info>
+-
+ typedef PRBool (*_XScreenSaverQueryExtension_fn)(Display* dpy, int* event_base,
+                                                  int* error_base);
+ 
+ typedef XScreenSaverInfo* (*_XScreenSaverAllocInfo_fn)(void);
+ 
+ typedef void (*_XScreenSaverQueryInfo_fn)(Display* dpy, Drawable drw,
+                                           XScreenSaverInfo *info);
+ 
+@@ -129,32 +127,8 @@ nsIdleServiceQt::GetIdleTime(PRUint32 *a
+ 
+         _XSSQueryInfo(dplay, QX11Info::appRootWindow(), mXssInfo);
+         *aTimeDiff = mXssInfo->idle;
+         return NS_OK;
+     }
+ 
+     return NS_ERROR_FAILURE;
+ }
+-
+-#else
+-
+-NS_IMPL_ISUPPORTS1(nsIdleServiceQt, nsIIdleService)
+-
+-nsIdleServiceQt::nsIdleServiceQt()
+-{
+-}
+-
+-static void Initialize()
+-{
+-}
+-
+-nsIdleServiceQt::~nsIdleServiceQt()
+-{
+-}
+-
+-NS_IMETHODIMP
+-nsIdleServiceQt::GetIdleTime(PRUint32 *aTimeDiff)
+-{
+-    return NS_ERROR_FAILURE;
+-}
+-
+-#endif
+diff --git a/widget/src/qt/nsWidgetFactory.cpp b/widget/src/qt/nsWidgetFactory.cpp
+--- a/widget/src/qt/nsWidgetFactory.cpp
++++ b/widget/src/qt/nsWidgetFactory.cpp
+@@ -155,22 +155,20 @@ static const nsModuleComponentInfo compo
+     { "Qt Drag Service",
+       NS_DRAGSERVICE_CID,
+       "@mozilla.org/widget/dragservice;1",
+       nsDragServiceConstructor },
+     { "Qt Bidi Keyboard",
+       NS_BIDIKEYBOARD_CID,
+       "@mozilla.org/widget/bidikeyboard;1",
+       nsBidiKeyboardConstructor },
+-#ifdef Q_WS_X11
+     { "Qt Idle Service",
+        NS_IDLE_SERVICE_CID,
+        "@mozilla.org/widget/idleservice;1",
+        nsIdleServiceQtConstructor },
+-#endif
+     { "Qt Sound",
+       NS_SOUND_CID,
+       "@mozilla.org/sound;1",
+       nsSoundConstructor },
+     { "Native Theme Renderer",
+       NS_THEMERENDERER_CID,
+       "@mozilla.org/chrome/chrome-native-theme;1",
+       nsNativeThemeQtConstructor },
+diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
+--- a/widget/src/qt/nsWindow.cpp
++++ b/widget/src/qt/nsWindow.cpp
+@@ -551,16 +551,20 @@ nsWindow::SetSizeMode(PRInt32 aMode)
+     switch (aMode) {
+     case nsSizeMode_Maximized:
+         widget->showMaximized();
+         break;
+     case nsSizeMode_Minimized:
+         widget->showMinimized();
+         break;
+     case nsSizeMode_Fullscreen:
++        // Some versions of Qt (4.6.x) crash in XSetInputFocus due to
++        // unsynchronized window activation.  Sync here to avoid such
++        // cases.
++        XSync(QX11Info().display(), False);
+         widget->showFullScreen();
+         break;
+ 
+     default:
+         // nsSizeMode_Normal, really.
+         widget->showNormal();
+         break;
+     }
+@@ -770,24 +774,22 @@ nsWindow::GetNativeData(PRUint32 aDataTy
+         return mWidget;
+         break;
+     }
+ 
+     case NS_NATIVE_PLUGIN_PORT:
+         return SetupPluginPort();
+         break;
+ 
+-#ifdef Q_WS_X11
+     case NS_NATIVE_DISPLAY:
+         {
+             QWidget *widget = GetViewWidget();
+             return widget ? widget->x11Info().display() : nsnull;
+         }
+         break;
+-#endif
+ 
+     case NS_NATIVE_GRAPHIC: {
+         NS_ASSERTION(nsnull != mToolkit, "NULL toolkit, unable to get a GC");
+         return (void *)static_cast<nsToolkit *>(mToolkit)->GetSharedGC();
+         break;
+     }
+ 
+     case NS_NATIVE_SHELLWIDGET:
+@@ -1776,17 +1778,16 @@ NS_IMETHODIMP
+ nsWindow::SetWindowClass(const nsAString &xulWinType)
+ {
+     if (!mWidget)
+       return NS_ERROR_FAILURE;
+ 
+     nsXPIDLString brandName;
+     GetBrandName(brandName);
+ 
+-#ifdef Q_WS_X11
+     XClassHint *class_hint = XAllocClassHint();
+     if (!class_hint)
+       return NS_ERROR_OUT_OF_MEMORY;
+     const char *role = NULL;
+     class_hint->res_name = ToNewCString(xulWinType);
+     if (!class_hint->res_name) {
+       XFree(class_hint);
+       return NS_ERROR_OUT_OF_MEMORY;
+@@ -1818,17 +1819,16 @@ nsWindow::SetWindowClass(const nsAString
+     if (widget && widget->handle())
+         XSetClassHint(widget->x11Info().display(),
+                       widget->handle(),
+                       class_hint);
+ 
+     nsMemory::Free(class_hint->res_class);
+     nsMemory::Free(class_hint->res_name);
+     XFree(class_hint);
+-#endif
+ 
+     return NS_OK;
+ }
+ 
+ void
+ nsWindow::NativeResize(PRInt32 aWidth, PRInt32 aHeight, PRBool  aRepaint)
+ {
+     LOG(("nsWindow::NativeResize [%p] %d %d\n", (void *)this,
+@@ -1934,22 +1934,20 @@ nsWindow::MakeFullScreen(PRBool aFullScr
+ {
+     QWidget *widget = GetViewWidget();
+     NS_ENSURE_TRUE(widget, NS_ERROR_FAILURE);
+     if (aFullScreen) {
+         if (mSizeMode != nsSizeMode_Fullscreen)
+             mLastSizeMode = mSizeMode;
+ 
+         mSizeMode = nsSizeMode_Fullscreen;
+-#ifdef Q_WS_X11
+         // Some versions of Qt (4.6.x) crash in XSetInputFocus due to
+         // unsynchronized window activation.  Sync here to avoid such
+         // cases.
+         XSync(QX11Info().display(), False);
+-#endif
+         widget->showFullScreen();
+     }
+     else {
+         mSizeMode = mLastSizeMode;
+ 
+         switch (mSizeMode) {
+         case nsSizeMode_Maximized:
+             widget->showMaximized();
+@@ -1995,21 +1993,19 @@ nsWindow::HideWindowChrome(PRBool aShoul
+         NativeShow(PR_TRUE);
+     }
+ 
+     // For some window managers, adding or removing window decorations
+     // requires unmapping and remapping our toplevel window.  Go ahead
+     // and flush the queue here so that we don't end up with a BadWindow
+     // error later when this happens (when the persistence timer fires
+     // and GetWindowPos is called)
+-#ifdef Q_WS_X11
+     QWidget *widget = GetViewWidget();
+     NS_ENSURE_TRUE(widget, NS_ERROR_FAILURE);
+     XSync(widget->x11Info().display(), False);
+-#endif
+ 
+     return NS_OK;
+ }
+ 
+ //////////////////////////////////////////////////////////////////////
+ // These are all of our drag and drop operations
+ 
+ void
