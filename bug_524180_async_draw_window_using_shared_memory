@@ -793,7 +793,7 @@ diff --git a/content/canvas/src/nsCanvasRenderingContext2D.cpp b/content/canvas/
          mSurface->CairoStatus() ||
          mThebes->HasError())
          return NS_ERROR_FAILURE;
-@@ -1533,37 +1661,16 @@ nsCanvasRenderingContext2D::SetShadowCol
+@@ -1531,37 +1659,16 @@ nsCanvasRenderingContext2D::SetShadowCol
  NS_IMETHODIMP
  nsCanvasRenderingContext2D::GetShadowColor(nsAString& color)
  {
@@ -831,7 +831,7 @@ diff --git a/content/canvas/src/nsCanvasRenderingContext2D.cpp b/content/canvas/
      gfxIntSize blurRadius;
  
      gfxFloat sigma = CurrentState().shadowBlur > 8 ? sqrt(CurrentState().shadowBlur) : CurrentState().shadowBlur / 2;
-@@ -3458,21 +3565,47 @@ nsCanvasRenderingContext2D::AsyncDrawXUL
+@@ -3456,21 +3563,47 @@ nsCanvasRenderingContext2D::AsyncDrawXUL
          renderDocFlags &= ~nsIPresShell::RENDER_IGNORE_VIEWPORT_SCROLLING;
      }
  
@@ -1242,7 +1242,7 @@ diff --git a/dom/ipc/PIFrameEmbedding.ipdl b/dom/ipc/PIFrameEmbedding.ipdl
      /**
       * When child sends this message, parent should move focus to
       * the next or previous focusable element.
-@@ -102,14 +105,20 @@ child:
+@@ -111,14 +114,20 @@ child:
      activateFrameEvent(nsString aType, bool capture);
  
      loadRemoteScript(nsString aURL);
@@ -1302,7 +1302,7 @@ diff --git a/dom/ipc/TabChild.cpp b/dom/ipc/TabChild.cpp
  #include <QGraphicsWidget>
  #endif
  
-@@ -481,16 +483,82 @@ TabChild::RecvPDocumentRendererConstruct
+@@ -497,16 +499,82 @@ TabChild::RecvPDocumentRendererConstruct
      bool ret = render->RenderDocument(window, aX, aY, aW, aH, bgcolor, flags, flush,
                                        width, height, data);
      if (!ret)
@@ -1407,25 +1407,7 @@ diff --git a/dom/ipc/TabChild.h b/dom/ipc/TabChild.h
  class TabChildGlobal : public nsDOMEventTargetHelper,
                         public nsIContentFrameMessageManager,
                         public nsIScriptObjectPrincipal,
-@@ -162,16 +164,17 @@ public:
-     virtual bool RecvsendMouseEvent(const nsString& aType,
-                                     const PRInt32&  aX,
-                                     const PRInt32&  aY,
-                                     const PRInt32&  aButton,
-                                     const PRInt32&  aClickCount,
-                                     const PRInt32&  aModifiers,
-                                     const bool&     aIgnoreRootScrollFrame);
-     virtual bool RecvactivateFrameEvent(const nsString& aType, const bool& capture);
-+
-     virtual bool RecvloadRemoteScript(const nsString& aURL);
-     virtual bool RecvsendAsyncMessageToChild(const nsString& aMessage,
-                                              const nsString& aJSON);
-     virtual mozilla::ipc::PDocumentRendererChild* AllocPDocumentRenderer(
-             const PRInt32& x,
-             const PRInt32& y,
-             const PRInt32& w,
-             const PRInt32& h,
-@@ -184,16 +187,43 @@ public:
+@@ -189,16 +191,43 @@ public:
              const PRInt32& x,
              const PRInt32& y,
              const PRInt32& w,
@@ -1558,7 +1540,7 @@ diff --git a/dom/ipc/TabParent.h b/dom/ipc/TabParent.h
  {
  public:
      TabParent();
-@@ -82,16 +83,31 @@ public:
+@@ -85,16 +86,31 @@ public:
              const PRInt32& x,
              const PRInt32& y,
              const PRInt32& w,
