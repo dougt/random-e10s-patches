@@ -1,197 +1,131 @@
 diff --git a/content/base/src/nsFrameLoader.cpp b/content/base/src/nsFrameLoader.cpp
 --- a/content/base/src/nsFrameLoader.cpp
 +++ b/content/base/src/nsFrameLoader.cpp
-@@ -1504,31 +1504,36 @@ nsFrameLoader::TryNewProcess()
-   mOwnerContent->GetAttr(kNameSpaceID_None, nsGkAtoms::type, value);
+@@ -1028,16 +1028,28 @@ nsFrameLoader::SwapWithOtherLoader(nsFra
+   
+   FirePageShowEvent(ourTreeItem, otherChromeEventHandler, PR_TRUE);
+   FirePageShowEvent(otherTreeItem, ourChromeEventHandler, PR_TRUE);
  
-   if (!value.LowerCaseEqualsLiteral("content") &&
-       !StringBeginsWith(value, NS_LITERAL_STRING("content-"),
-                         nsCaseInsensitiveStringComparator())) {
-     return false;
-   }
- 
--  mChildProcess = ContentProcessParent::GetSingleton()->CreateTab();
-+  ContentProcessParent* parent = ContentProcessParent::GetSingleton();
-+  NS_ASSERTION(parent->IsAlive(), "Process parent should be alive; something is very wrong!");
-+  mChildProcess = parent->CreateTab();
-+
-   if (mChildProcess) {
-     nsCOMPtr<nsIDOMElement> element = do_QueryInterface(mOwnerContent);
-     mChildProcess->SetOwnerElement(element);
- 
-     nsCOMPtr<nsIDocShellTreeItem> rootItem;
-     parentAsItem->GetRootTreeItem(getter_AddRefs(rootItem));
-     nsCOMPtr<nsIDOMWindow> rootWin = do_GetInterface(rootItem);
-     nsCOMPtr<nsIDOMChromeWindow> rootChromeWin = do_QueryInterface(rootWin);
-     NS_ABORT_IF_FALSE(rootChromeWin, "How did we not get a chrome window here?");
- 
-     nsCOMPtr<nsIBrowserDOMWindow> browserDOMWin;
-     rootChromeWin->GetBrowserDOMWindow(getter_AddRefs(browserDOMWin));
-     mChildProcess->SetBrowserDOMWindow(browserDOMWin);
- 
-+    mChildHost = parent;
-+
-     XRE_SendParentChromeRegistry(mChildProcess);
-   }
-   return true;
+   mInSwap = aOther->mInSwap = PR_FALSE;
+   return NS_OK;
  }
- #endif
  
- #ifdef MOZ_IPC
- mozilla::dom::PIFrameEmbeddingParent*
++void
++nsFrameLoader::DestroyChild()
++{
++#ifdef MOZ_IPC
++  if (mChildProcess) {
++    mChildProcess->SetOwnerElement(nsnull);
++    PIFrameEmbeddingParent::Send__delete__(mChildProcess);
++    mChildProcess = nsnull;
++  }
++#endif
++}
++
+ NS_IMETHODIMP
+ nsFrameLoader::Destroy()
+ {
+   if (mDestroyCalled) {
+     return NS_OK;
+   }
+   mDestroyCalled = PR_TRUE;
+ 
+@@ -1046,24 +1058,18 @@ nsFrameLoader::Destroy()
+     doc = mOwnerContent->GetOwnerDoc();
+ 
+     if (doc) {
+       doc->SetSubDocumentFor(mOwnerContent, nsnull);
+     }
+ 
+     mOwnerContent = nsnull;
+   }
+-#ifdef MOZ_IPC
+-  if (mChildProcess) {
+-    mChildProcess->SetOwnerElement(nsnull);
+-    PIFrameEmbeddingParent::Send__delete__(mChildProcess);
+-    mChildProcess = nsnull;
+-  }
+-#endif
+-
++  DestroyChild();
++  
+   // Let the tree owner know we're gone.
+   if (mIsTopLevelContent) {
+     nsCOMPtr<nsIDocShellTreeItem> ourItem = do_QueryInterface(mDocShell);
+     if (ourItem) {
+       nsCOMPtr<nsIDocShellTreeItem> parentItem;
+       ourItem->GetParent(getter_AddRefs(parentItem));
+       nsCOMPtr<nsIDocShellTreeOwner> owner = do_GetInterface(parentItem);
+       if (owner) {
 diff --git a/content/base/src/nsFrameLoader.h b/content/base/src/nsFrameLoader.h
 --- a/content/base/src/nsFrameLoader.h
 +++ b/content/base/src/nsFrameLoader.h
-@@ -184,16 +184,17 @@ private:
-   PRPackedBool mDestroyCalled : 1;
-   PRPackedBool mNeedsAsyncDestroy : 1;
-   PRPackedBool mInSwap : 1;
+@@ -133,16 +133,19 @@ public:
  
+   // The guts of an nsIFrameLoaderOwner::SwapFrameLoader implementation.  A
+   // frame loader owner needs to call this, and pass in the two references to
+   // nsRefPtrs for frame loaders that need to be swapped.
+   nsresult SwapWithOtherLoader(nsFrameLoader* aOther,
+                                nsRefPtr<nsFrameLoader>& aFirstToSwap,
+                                nsRefPtr<nsFrameLoader>& aSecondToSwap);
+ 
++  // When IPC is enabled, destroy any associated child process.
++  void DestroyChild();
++
  #ifdef MOZ_IPC
-   PRPackedBool mRemoteWidgetCreated : 1;
-   bool mRemoteFrame;
-   // XXX leaking
-+  nsCOMPtr<nsIObserver> mChildHost;
-   mozilla::dom::TabParent* mChildProcess;
- 
- #ifdef MOZ_WIDGET_GTK2
-   GtkWidget* mRemoteSocket;
- #elif defined(MOZ_WIDGET_QT)
-   QX11EmbedContainer* mRemoteSocket;
+   mozilla::dom::PIFrameEmbeddingParent* GetChildProcess();
  #endif
- #endif
-diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
---- a/dom/ipc/ContentProcessParent.cpp
-+++ b/dom/ipc/ContentProcessParent.cpp
-@@ -49,29 +49,28 @@
- #include "nsServiceManagerUtils.h"
- #include "nsThreadUtils.h"
- #include "nsChromeRegistry.h"
  
- using namespace mozilla::ipc;
- using namespace mozilla::net;
- using mozilla::MonitorAutoEnter;
- 
--namespace {
--PRBool gSingletonDied = PR_FALSE;
--}
--
- namespace mozilla {
- namespace dom {
- 
- ContentProcessParent* ContentProcessParent::gSingleton;
- 
- ContentProcessParent*
- ContentProcessParent::GetSingleton()
- {
--    if (!gSingleton && !gSingletonDied) {
-+    if (gSingleton && !gSingleton->IsAlive())
-+        gSingleton = nsnull;
-+
-+    if (!gSingleton) {
-         nsRefPtr<ContentProcessParent> parent = new ContentProcessParent();
-         if (parent) {
-             nsCOMPtr<nsIObserverService> obs =
-                 do_GetService("@mozilla.org/observer-service;1");
-             if (obs) {
-                 if (NS_SUCCEEDED(obs->AddObserver(parent, "xpcom-shutdown",
-                                                   PR_FALSE))) {
-                     gSingleton = parent;
-@@ -98,16 +97,18 @@ ContentProcessParent::ActorDestroy(Actor
-     if (obs)
-         obs->RemoveObserver(static_cast<nsIObserver*>(this), "xpcom-shutdown");
-     nsCOMPtr<nsIThreadInternal>
-         threadInt(do_QueryInterface(NS_GetCurrentThread()));
-     if (threadInt)
-         threadInt->SetObserver(mOldObserver);
-     if (mRunToCompletionDepth)
-         mRunToCompletionDepth = 0;
-+
-+    mIsAlive = false;
- }
- 
- TabParent*
- ContentProcessParent::CreateTab()
- {
-   return static_cast<TabParent*>(SendPIFrameEmbeddingConstructor());
- }
- 
-@@ -121,32 +122,40 @@ bool
- ContentProcessParent::DestroyTestShell(TestShellParent* aTestShell)
- {
-     return PTestShellParent::Send__delete__(aTestShell);
- }
- 
- ContentProcessParent::ContentProcessParent()
-     : mMonitor("ContentProcessParent::mMonitor")
-     , mRunToCompletionDepth(0)
-+    , mIsAlive(true)
- {
-     NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
-     mSubprocess = new GeckoChildProcessHost(GeckoProcessType_Content);
-     mSubprocess->AsyncLaunch();
-     Open(mSubprocess->GetChannel(), mSubprocess->GetChildProcessHandle());
- 
-     nsChromeRegistry* chromeRegistry = nsChromeRegistry::GetService();
-     chromeRegistry->SendRegisteredChrome(this);
- }
- 
- ContentProcessParent::~ContentProcessParent()
- {
-     NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
--    NS_ASSERTION(gSingleton == this, "More than one singleton?!");
--    gSingletonDied = PR_TRUE;
--    gSingleton = nsnull;
-+    //If the previous content process has died, a new one could have
-+    //been started since.
-+    if (gSingleton == this)
-+        gSingleton = nsnull;
-+}
-+
-+bool
-+ContentProcessParent::IsAlive()
-+{
-+    return mIsAlive;
- }
- 
- NS_IMPL_THREADSAFE_ISUPPORTS2(ContentProcessParent,
-                               nsIObserver,
-                               nsIThreadObserver)
- 
- namespace {
- void
-diff --git a/dom/ipc/ContentProcessParent.h b/dom/ipc/ContentProcessParent.h
---- a/dom/ipc/ContentProcessParent.h
-+++ b/dom/ipc/ContentProcessParent.h
-@@ -80,16 +80,18 @@ public:
- 
-     TabParent* CreateTab();
- 
-     TestShellParent* CreateTestShell();
-     bool DestroyTestShell(TestShellParent* aTestShell);
- 
-     bool RequestRunToCompletion();
- 
-+    bool IsAlive();
-+
- protected:
-     virtual void ActorDestroy(ActorDestroyReason why);
+   nsFrameMessageManager* GetFrameMessageManager() { return mMessageManager; }
  
  private:
-     static ContentProcessParent* gSingleton;
  
-     // Hide the raw constructor methods since we don't want client code
-     // using them.
-@@ -110,14 +112,15 @@ private:
+diff --git a/dom/ipc/TabParent.cpp b/dom/ipc/TabParent.cpp
+--- a/dom/ipc/TabParent.cpp
++++ b/dom/ipc/TabParent.cpp
+@@ -61,16 +61,28 @@ namespace dom {
+ TabParent::TabParent()
+ {
+ }
  
-     mozilla::Monitor mMonitor;
+ TabParent::~TabParent()
+ {
+ }
  
-     GeckoChildProcessHost* mSubprocess;
++void
++TabParent::ActorDestroy(ActorDestroyReason why)
++{
++  nsCOMPtr<nsIFrameLoaderOwner> frameLoaderOwner = do_QueryInterface(mFrameElement);
++  if (frameLoaderOwner) {
++    nsRefPtr<nsFrameLoader> frameLoader = frameLoaderOwner->GetFrameLoader();
++    if (frameLoader) {
++      frameLoader->DestroyChild();
++    }
++  }
++}
++
+ bool
+ TabParent::RecvmoveFocus(const bool& aForward)
+ {
+   nsCOMPtr<nsIFocusManager> fm = do_GetService(FOCUSMANAGER_CONTRACTID);
+   if (fm) {
+     nsCOMPtr<nsIDOMElement> dummy;
+     PRUint32 type = aForward ? nsIFocusManager::MOVEFOCUS_FORWARD
+                              : nsIFocusManager::MOVEFOCUS_BACKWARD;
+diff --git a/dom/ipc/TabParent.h b/dom/ipc/TabParent.h
+--- a/dom/ipc/TabParent.h
++++ b/dom/ipc/TabParent.h
+@@ -104,14 +104,16 @@ public:
+             const PRInt32& bufw,
+             const PRInt32& bufh,
+             Shmem& buf);
+     virtual bool DeallocPDocumentRendererShmem(PDocumentRendererShmemParent* actor);
  
-     int mRunToCompletionDepth;
-     nsCOMPtr<nsIThreadObserver> mOldObserver;
- 
-+    bool mIsAlive;
+ protected:
+     nsIDOMElement* mFrameElement;
+     nsCOMPtr<nsIBrowserDOMWindow> mBrowserDOMWindow;
++
++    void ActorDestroy(ActorDestroyReason why);
  };
  
  } // namespace dom

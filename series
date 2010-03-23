@@ -1,14 +1,20 @@
+
+# GFX
 bug_552142_fast_scale_branch_pixman
-bug_542907_unified_chrome_registry
-bug_544623_shared_actor_tree
+bug_545632_16bpp
+bug_545632_16bpp_qt
+bug_xxxxxx_gfx_image_16bpp_enabler
+
+# IPC
+# bug_542907_unified_chrome_registry
+
 bug_544607_shmem_is_readable_writeable
 bug_524180_async_draw_window_using_shared_memory
 bug_XXXXXX_use_offscreen_surface_with_shmem_hack_never_check_in
 bug_524180_fire_event_on_async_canvas_draw
 bug_545237_ContentProcessParent_singleton
-bug_551431_resize_optimizations_qt
-bug_545632_16bpp
-bug_545632_16bpp_qt
-bug_516728_is_visited
-BUG_XXXXXX_maemo_qt_46_sdk_update
-bug_xxxxxx_gfx_image_16bpp_enabler
+bug_544623_shared_actor_tree
+
+# Places
+
+#bug_516728_is_visited

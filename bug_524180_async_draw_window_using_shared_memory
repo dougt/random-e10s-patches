@@ -60,7 +60,7 @@ new file mode 100644
 +                        const PRInt32& y, const PRInt32& w,
 +                        const PRInt32& h, const nsString& aBGColor,
 +                        const PRUint32& flags, const PRBool& flush,
-+			const gfxMatrix &aMatrix,
++                        const gfxMatrix& aMatrix,
 +                        const PRInt32& bufw, const PRInt32& bufh,
 +                        Shmem& data);
 +
@@ -219,7 +219,7 @@ diff --git a/content/canvas/public/nsICanvasRenderingContextInternal.h b/content
 +
 +  // Swap this back buffer with the front, and copy its contents to the new
 +  // back. x, y, w, and h specify the area of |back| that is dirty.
-+  NS_IMETHOD Swap(mozilla::ipc::Shmem &back,
++  NS_IMETHOD Swap(mozilla::ipc::Shmem& back,
 +                  PRInt32 x, PRInt32 y, PRInt32 w, PRInt32 h) = 0;
  };
  
@@ -231,7 +231,7 @@ diff --git a/content/canvas/src/DocumentRendererShmemChild.cpp b/content/canvas/
 new file mode 100644
 --- /dev/null
 +++ b/content/canvas/src/DocumentRendererShmemChild.cpp
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,145 @@
 +/* ***** BEGIN LICENSE BLOCK *****
 + * Version: MPL 1.1/GPL 2.0/LGPL 2.1
 + *
@@ -338,7 +338,7 @@ new file mode 100644
 +                                      const PRInt32& y, const PRInt32& w,
 +                                      const PRInt32& h, const nsString& aBGColor,
 +                                      const PRUint32& flags, const PRBool& flush,
-+				      const gfxMatrix &aMatrix,
++                                      const gfxMatrix& aMatrix,
 +                                      const PRInt32& bufw, const PRInt32& bufh,
 +                                      Shmem& data)
 +{
@@ -358,8 +358,7 @@ new file mode 100644
 +
 +    nscolor bgColor;
 +    nsCSSParser parser;
-+    nsresult rv = parser.ParseColorString(PromiseFlatString(aBGColor),
-+					  nsnull, 0, &bgColor);
++    nsresult rv = parser.ParseColorString(PromiseFlatString(aBGColor), nsnull, 0, &bgColor);
 +    if (NS_FAILED(rv))
 +        return false;
 +
@@ -489,7 +488,7 @@ diff --git a/content/canvas/src/WebGLContext.cpp b/content/canvas/src/WebGLConte
 diff --git a/content/canvas/src/WebGLContext.h b/content/canvas/src/WebGLContext.h
 --- a/content/canvas/src/WebGLContext.h
 +++ b/content/canvas/src/WebGLContext.h
-@@ -238,17 +238,21 @@ public:
+@@ -238,17 +238,23 @@ public:
      NS_IMETHOD InitializeWithSurface(nsIDocShell *docShell, gfxASurface *surface, PRInt32 width, PRInt32 height)
          { return NS_ERROR_NOT_IMPLEMENTED; }
      NS_IMETHOD Render(gfxContext *ctx, gfxPattern::GraphicsFilter f);
@@ -498,11 +497,13 @@ diff --git a/content/canvas/src/WebGLContext.h b/content/canvas/src/WebGLContext
                                nsIInputStream **aStream);
      NS_IMETHOD GetThebesSurface(gfxASurface **surface);
      NS_IMETHOD SetIsOpaque(PRBool b) { return NS_OK; };
-+    NS_IMETHOD SetIsShmem(PRBool b) { return NS_OK; }
++    NS_IMETHOD SetIsShmem(PRBool b) { return NS_ERROR_NOT_IMPLEMENTED; }
      NS_IMETHOD Redraw(const gfxRect&) { return NS_ERROR_NOT_IMPLEMENTED; }
-+    NS_IMETHOD Swap(mozilla::ipc::Shmem &aBack,
++#ifdef MOZ_IPC
++    NS_IMETHOD Swap(mozilla::ipc::Shmem& aBack,
 +                    PRInt32 x, PRInt32 y, PRInt32 w, PRInt32 h)
 +                    { return NS_ERROR_NOT_IMPLEMENTED; }
++#endif
  
  protected:
      GLES20Wrap *gl;
@@ -576,7 +577,7 @@ diff --git a/content/canvas/src/nsCanvasRenderingContext2D.cpp b/content/canvas/
  class nsCanvasGradient : public nsIDOMCanvasGradient
  {
  public:
-@@ -334,18 +359,23 @@ public:
+@@ -334,18 +359,25 @@ public:
      NS_IMETHOD SetDimensions(PRInt32 width, PRInt32 height);
      NS_IMETHOD InitializeWithSurface(nsIDocShell *shell, gfxASurface *surface, PRInt32 width, PRInt32 height);
      NS_IMETHOD Render(gfxContext *ctx, gfxPattern::GraphicsFilter aFilter);
@@ -588,10 +589,12 @@ diff --git a/content/canvas/src/nsCanvasRenderingContext2D.cpp b/content/canvas/
 +    NS_IMETHOD SetIsShmem(PRBool isShmem);
      // this rect is in CSS pixels
      NS_IMETHOD Redraw(const gfxRect &r);
++#ifdef MOZ_IPC
 +    // Swap this back buffer with the front, and copy its contents to the new back.
 +    // x, y, w, and h specify the area of |back| that is dirty.
-+    NS_IMETHOD Swap(mozilla::ipc::Shmem &back, PRInt32 x, PRInt32 y, 
++    NS_IMETHOD Swap(mozilla::ipc::Shmem& back, PRInt32 x, PRInt32 y, 
 +                    PRInt32 w, PRInt32 h);
++#endif
  
      // nsISupports interface
      NS_DECL_ISUPPORTS
@@ -600,7 +603,7 @@ diff --git a/content/canvas/src/nsCanvasRenderingContext2D.cpp b/content/canvas/
      NS_DECL_NSIDOMCANVASRENDERINGCONTEXT2D
  
      enum Style {
-@@ -400,16 +430,31 @@ protected:
+@@ -400,16 +432,31 @@ protected:
       */
      void EnsurePremultiplyTable();
  
@@ -632,7 +635,7 @@ diff --git a/content/canvas/src/nsCanvasRenderingContext2D.cpp b/content/canvas/
      nsCOMPtr<nsIDocShell> mDocShell;
  
      // yay thebes
-@@ -692,17 +737,17 @@ NS_NewCanvasRenderingContext2D(nsIDOMCan
+@@ -692,17 +739,17 @@ NS_NewCanvasRenderingContext2D(nsIDOMCan
      if (!ctx)
          return NS_ERROR_OUT_OF_MEMORY;
  
@@ -651,7 +654,7 @@ diff --git a/content/canvas/src/nsCanvasRenderingContext2D.cpp b/content/canvas/
  
  nsCanvasRenderingContext2D::~nsCanvasRenderingContext2D()
  {
-@@ -900,35 +945,62 @@ nsCanvasRenderingContext2D::Redraw(const
+@@ -900,35 +947,62 @@ nsCanvasRenderingContext2D::Redraw(const
          return NS_OK;
  
      if (++mInvalidateCount > kCanvasMaxInvalidateCount)
@@ -720,7 +723,7 @@ diff --git a/content/canvas/src/nsCanvasRenderingContext2D.cpp b/content/canvas/
  nsCanvasRenderingContext2D::InitializeWithSurface(nsIDocShell *docShell, gfxASurface *surface, PRInt32 width, PRInt32 height) {
      Destroy();
  
-@@ -997,16 +1069,72 @@ nsCanvasRenderingContext2D::SetIsOpaque(
+@@ -997,16 +1071,70 @@ nsCanvasRenderingContext2D::SetIsOpaque(
           */
          return SetDimensions(mWidth, mHeight);
      }
@@ -746,13 +749,11 @@ diff --git a/content/canvas/src/nsCanvasRenderingContext2D.cpp b/content/canvas/
 +    return NS_OK;
 +}
 +
++#ifdef MOZ_IPC
 +NS_IMETHODIMP
-+nsCanvasRenderingContext2D::Swap(mozilla::ipc::Shmem &aBack, 
++nsCanvasRenderingContext2D::Swap(mozilla::ipc::Shmem& aBack, 
 +                                 PRInt32 x, PRInt32 y, PRInt32 w, PRInt32 h)
 +{
-+#ifndef MOZ_IPC
-+    return NS_ERROR_NOT_IMPLEMENTED;
-+#else
 +    // Our front buffer is always the correct size. If this back buffer doesn't
 +    // match the front buffer's size, it's out of date (we've resized since
 +    // this message was sent) and we should just ignore it.
@@ -781,8 +782,8 @@ diff --git a/content/canvas/src/nsCanvasRenderingContext2D.cpp b/content/canvas/
 +           mWidth * mHeight * 4);
 +
 +    return NS_OK;
-+#endif
 +}
++#endif
 +
 +NS_IMETHODIMP
  nsCanvasRenderingContext2D::Render(gfxContext *ctx, gfxPattern::GraphicsFilter aFilter)
@@ -853,7 +854,7 @@ diff --git a/content/canvas/src/nsCanvasRenderingContext2D.cpp b/content/canvas/
 +            child->SendPDocumentRendererShmemConstructor(x, y, w, h,
 +                                                         nsString(aBGColor),
 +                                                         renderDocFlags, flush,
-+							 mThebes->CurrentMatrix(),
++                                                         mThebes->CurrentMatrix(),
 +                                                         mWidth, mHeight,
 +                                                         mBackBuffer);
 +        if (!pdocrender)
@@ -896,7 +897,7 @@ diff --git a/content/html/content/src/nsHTMLCanvasElement.cpp b/content/html/con
    nsresult ToDataURLImpl(const nsAString& aMimeType,
                           const nsAString& aEncoderOptions,
                           nsAString& aDataURL);
-+  nsresult GetContextHelper(const nsAString &aContextId,
++  nsresult GetContextHelper(const nsAString& aContextId,
 +                            nsICanvasRenderingContextInternal **aContext);
  
    nsString mCurrentContextId;
@@ -906,7 +907,7 @@ diff --git a/content/html/content/src/nsHTMLCanvasElement.cpp b/content/html/con
    // Record whether this canvas should be write-only or not.
    // We set this when script paints an image from a different origin.
    // We also transitively set it when script paints a canvas which
-@@ -407,55 +409,114 @@ nsHTMLCanvasElement::ToDataURLImpl(const
+@@ -407,54 +409,75 @@ nsHTMLCanvasElement::ToDataURLImpl(const
    aDataURL = NS_LITERAL_STRING("data:") + aMimeType +
      NS_LITERAL_STRING(";base64,") + NS_ConvertUTF8toUTF16(encodedImg);
  
@@ -916,7 +917,7 @@ diff --git a/content/html/content/src/nsHTMLCanvasElement.cpp b/content/html/con
  }
  
 +nsresult
-+nsHTMLCanvasElement::GetContextHelper(const nsAString &aContextId,
++nsHTMLCanvasElement::GetContextHelper(const nsAString& aContextId,
 +                                      nsICanvasRenderingContextInternal **aContext)
 +{
 +  NS_ENSURE_ARG(aContext);
@@ -973,10 +974,7 @@ diff --git a/content/html/content/src/nsHTMLCanvasElement.cpp b/content/html/con
    if (mCurrentContextId.IsEmpty()) {
 -    nsCString ctxId;
 -    ctxId.Assign(NS_LossyConvertUTF16toASCII(aContextId));
-+    rv = GetContextHelper(aContextId, getter_AddRefs(mCurrentContext));
-+    if (NS_FAILED(rv))
-+      return rv;
- 
+-
 -    // check that ctxId is clamped to A-Za-z0-9_-
 -    for (PRUint32 i = 0; i < ctxId.Length(); i++) {
 -      if ((ctxId[i] < 'A' || ctxId[i] > 'Z') &&
@@ -996,31 +994,38 @@ diff --git a/content/html/content/src/nsHTMLCanvasElement.cpp b/content/html/con
 -    mCurrentContext = do_CreateInstance(nsPromiseFlatCString(ctxString).get(), &rv);
 -    if (rv == NS_ERROR_OUT_OF_MEMORY)
 -      return NS_ERROR_OUT_OF_MEMORY;
--    if (NS_FAILED(rv))
++    rv = GetContextHelper(aContextId, getter_AddRefs(mCurrentContext));
+     if (NS_FAILED(rv))
 -      // XXX ERRMSG we need to report an error to developers here! (bug 329026)
 -      return NS_ERROR_INVALID_ARG;
 -
 -    rv = mCurrentContext->SetCanvasElement(this);
-+    rv = UpdateContext();
+-    if (NS_FAILED(rv)) {
+-      mCurrentContext = nsnull;
+       return rv;
+-    }
+ 
+     rv = UpdateContext();
      if (NS_FAILED(rv)) {
        mCurrentContext = nsnull;
        return rv;
      }
  
-+    mCurrentContextId.Assign(aContextId);
-+  } else if (!mCurrentContextId.Equals(aContextId)) {
-+    //XXX eventually allow for more than one active context on a given canvas
-+    return NS_ERROR_INVALID_ARG;
-+  }
-+
-+  NS_ADDREF (*aContext = mCurrentContext);
-+  return NS_OK;
-+}
-+
+     mCurrentContextId.Assign(aContextId);
+@@ -462,16 +485,58 @@ nsHTMLCanvasElement::GetContext(const ns
+     //XXX eventually allow for more than one active context on a given canvas
+     return NS_ERROR_INVALID_ARG;
+   }
+ 
+   NS_ADDREF (*aContext = mCurrentContext);
+   return NS_OK;
+ }
+ 
 +NS_IMETHODIMP
 +nsHTMLCanvasElement::MozGetShmemContext(const nsAString& aContextId,
 +                                        nsISupports **aContext)
 +{
++#ifdef MOZ_IPC
 +  if(!nsContentUtils::IsCallerTrustedForRead()) {
 +    // XXX ERRMSG we need to report an error to developers here! (bug 329026)
 +    return NS_ERROR_DOM_SECURITY_ERR;
@@ -1039,14 +1044,33 @@ diff --git a/content/html/content/src/nsHTMLCanvasElement.cpp b/content/html/con
 +
 +    mCurrentContext->SetIsShmem(PR_TRUE);
 +
-     rv = UpdateContext();
-     if (NS_FAILED(rv)) {
-       mCurrentContext = nsnull;
-       return rv;
-     }
- 
-     mCurrentContextId.Assign(aContextId);
-   } else if (!mCurrentContextId.Equals(aContextId)) {
++    rv = UpdateContext();
++    if (NS_FAILED(rv)) {
++      mCurrentContext = nsnull;
++      return rv;
++    }
++
++    mCurrentContextId.Assign(aContextId);
++  } else if (!mCurrentContextId.Equals(aContextId)) {
++    //XXX eventually allow for more than one active context on a given canvas
++    return NS_ERROR_INVALID_ARG;
++  }
++
++  NS_ADDREF (*aContext = mCurrentContext);
++  return NS_OK;
++#else
++  return NS_ERROR_NOT_IMPLEMENTED;
++#endif
++}
++
+ nsresult
+ nsHTMLCanvasElement::UpdateContext()
+ {
+   nsresult rv = NS_OK;
+   if (mCurrentContext) {
+     nsIntSize sz = GetWidthHeight();
+     rv = mCurrentContext->SetIsOpaque(GetIsOpaque());
+     rv = mCurrentContext->SetDimensions(sz.width, sz.height);
 diff --git a/dom/interfaces/html/nsIDOMHTMLCanvasElement.idl b/dom/interfaces/html/nsIDOMHTMLCanvasElement.idl
 --- a/dom/interfaces/html/nsIDOMHTMLCanvasElement.idl
 +++ b/dom/interfaces/html/nsIDOMHTMLCanvasElement.idl
@@ -1084,50 +1108,6 @@ diff --git a/dom/interfaces/html/nsIDOMHTMLCanvasElement.idl b/dom/interfaces/ht
 +  nsISupports MozGetShmemContext(in DOMString contextId);
  };
  
-diff --git a/dom/ipc/ContentProcessChild.h b/dom/ipc/ContentProcessChild.h
---- a/dom/ipc/ContentProcessChild.h
-+++ b/dom/ipc/ContentProcessChild.h
-@@ -71,16 +71,18 @@ public:
-     virtual bool DeallocPIFrameEmbedding(PIFrameEmbeddingChild*);
- 
-     virtual PTestShellChild* AllocPTestShell();
-     virtual bool DeallocPTestShell(PTestShellChild*);
- 
-     virtual PNeckoChild* AllocPNecko();
-     virtual bool DeallocPNecko(PNeckoChild*);
- 
-+    virtual bool RecvDummy(Shmem& foo) { return true; }
-+
-     virtual bool RecvregisterChrome(const nsTArray<ChromePackage>& packages,
-                                     const nsTArray<ChromeResource>& resources);
- 
- private:
-     NS_OVERRIDE
-     virtual void ActorDestroy(ActorDestroyReason why);
- 
-     void Quit();
-diff --git a/dom/ipc/PContentProcess.ipdl b/dom/ipc/PContentProcess.ipdl
---- a/dom/ipc/PContentProcess.ipdl
-+++ b/dom/ipc/PContentProcess.ipdl
-@@ -58,14 +58,18 @@ rpc protocol PContentProcess
- 
- child:
-     PIFrameEmbedding();
- 
-     PTestShell();
- 
-     registerChrome(ChromePackage[] packages, ChromeResource[] resources);
- 
-+    // A dummy message to make sure PContentProcess contains methods to create
-+    // Shmem segments.
-+    async Dummy(Shmem foo);
-+
- parent:
-     PNecko();
- };
- 
- }
- }
 diff --git a/dom/ipc/PDocumentRenderer.ipdl b/dom/ipc/PDocumentRenderer.ipdl
 --- a/dom/ipc/PDocumentRenderer.ipdl
 +++ b/dom/ipc/PDocumentRenderer.ipdl
@@ -1208,7 +1188,7 @@ new file mode 100644
 diff --git a/dom/ipc/PIFrameEmbedding.ipdl b/dom/ipc/PIFrameEmbedding.ipdl
 --- a/dom/ipc/PIFrameEmbedding.ipdl
 +++ b/dom/ipc/PIFrameEmbedding.ipdl
-@@ -34,30 +34,33 @@
+@@ -34,30 +34,34 @@
   * and other provisions required by the GPL or the LGPL. If you do not delete
   * the provisions above, a recipient may use your version of this file under
   * the terms of any one of the MPL, the GPL or the LGPL.
@@ -1221,6 +1201,7 @@ diff --git a/dom/ipc/PIFrameEmbedding.ipdl b/dom/ipc/PIFrameEmbedding.ipdl
  
  include "mozilla/TabTypes.h";
  include "TabMessageUtils.h";
++include "gfxMatrix.h";
  
  using MagicWindowHandle;
  using RemoteDOMEvent;
@@ -1242,7 +1223,8 @@ diff --git a/dom/ipc/PIFrameEmbedding.ipdl b/dom/ipc/PIFrameEmbedding.ipdl
      /**
       * When child sends this message, parent should move focus to
       * the next or previous focusable element.
-@@ -111,14 +114,20 @@ child:
+@@ -110,12 +114,19 @@ child:
+      */
      activateFrameEvent(nsString aType, bool capture);
  
      loadRemoteScript(nsString aURL);
@@ -1250,15 +1232,13 @@ diff --git a/dom/ipc/PIFrameEmbedding.ipdl b/dom/ipc/PIFrameEmbedding.ipdl
      sendAsyncMessageToChild(nsString aMessage, nsString aJSON);
  
      PDocumentRenderer(PRInt32 x, PRInt32 y, PRInt32 w, PRInt32 h, nsString bgcolor, PRUint32 flags, bool flush);
- 
++
 +    // @param matrix the transformation matrix the context we're going to draw into should have.
 +    // @param bufw the width of @buf, in pixels
 +    // @param bufh the height of @buf, in pixels
 +    PDocumentRendererShmem(PRInt32 x, PRInt32 y, PRInt32 w, PRInt32 h, nsString bgcolor, PRUint32 flags, bool flush,
 +                           gfxMatrix matrix, PRInt32 bufw, PRInt32 bufh, Shmem buf);
 +
-     registerChromePackage(nsString aPackage, nsString aBaseURI, PRUint32 aFlags);
-     registerChromeResource(nsString aPackage, nsString aResolvedURI);
  };
  
  }
@@ -1284,7 +1264,8 @@ diff --git a/dom/ipc/TabChild.cpp b/dom/ipc/TabChild.cpp
  #include "nsIDOMEvent.h"
  #include "nsIPrivateDOMEvent.h"
  #include "nsIComponentManager.h"
-@@ -62,16 +63,17 @@
+@@ -61,16 +62,17 @@
+ #include "nsIDOMClassInfo.h"
  #include "nsIXPCSecurityManager.h"
  #include "nsIJSContextStack.h"
  #include "nsComponentManagerUtils.h"
@@ -1292,7 +1273,6 @@ diff --git a/dom/ipc/TabChild.cpp b/dom/ipc/TabChild.cpp
  #include "nsScriptLoader.h"
  #include "nsPIWindowRoot.h"
  #include "nsIScriptContext.h"
- #include "nsXULAppAPI.h"
 +#include "nsPresContext.h"
  
  #ifdef MOZ_WIDGET_QT
@@ -1302,7 +1282,7 @@ diff --git a/dom/ipc/TabChild.cpp b/dom/ipc/TabChild.cpp
  #endif
  
  #ifdef MOZ_WIDGET_GTK2
-@@ -481,16 +483,82 @@ TabChild::RecvPDocumentRendererConstruct
+@@ -480,16 +482,80 @@ TabChild::RecvPDocumentRendererConstruct
      bool ret = render->RenderDocument(window, aX, aY, aW, aH, bgcolor, flags, flush,
                                        width, height, data);
      if (!ret)
@@ -1320,7 +1300,7 @@ diff --git a/dom/ipc/TabChild.cpp b/dom/ipc/TabChild.cpp
 +        const nsString& bgcolor,
 +        const PRUint32& flags,
 +        const bool& flush,
-+	const gfxMatrix& aMatrix,
++        const gfxMatrix& aMatrix,
 +        const PRInt32& bufw,
 +        const PRInt32& bufh,
 +        Shmem& buf)
@@ -1337,7 +1317,7 @@ diff --git a/dom/ipc/TabChild.cpp b/dom/ipc/TabChild.cpp
 +
 +bool
 +TabChild::RecvPDocumentRendererShmemConstructor(
-+        mozilla::ipc::PDocumentRendererShmemChild *__a,
++        PDocumentRendererShmemChild *__a,
 +        const PRInt32& aX,
 +        const PRInt32& aY,
 +        const PRInt32& aW,
@@ -1345,7 +1325,7 @@ diff --git a/dom/ipc/TabChild.cpp b/dom/ipc/TabChild.cpp
 +        const nsString& bgcolor,
 +        const PRUint32& flags,
 +        const bool& flush,
-+	const gfxMatrix& aMatrix,
++        const gfxMatrix& aMatrix,
 +        const PRInt32& aBufW,
 +        const PRInt32& aBufH,
 +        Shmem& aBuf)
@@ -1356,35 +1336,33 @@ diff --git a/dom/ipc/TabChild.cpp b/dom/ipc/TabChild.cpp
 +    nsCOMPtr<nsIWebBrowser> browser = do_QueryInterface(mWebNav);
 +    if (!browser)
 +        return true; // silently ignore
-+    nsCOMPtr<nsIDOMWindow> window;
++ 
++   nsCOMPtr<nsIDOMWindow> window;
 +    if (NS_FAILED(browser->GetContentDOMWindow(getter_AddRefs(window))) ||
 +        !window)
-+    {
-+        return true; // silently ignore
-+    }
-+
++         return true; // silently ignore
++ 
 +    render->RenderDocument(window, aX, aY, aW, aH, bgcolor, flags, flush,
 +                           aMatrix, aBufW, aBufH, aBuf);
 +
 +    gfxRect dirtyArea(0, 0, nsPresContext::AppUnitsToIntCSSPixels(aW), 
-+		      nsPresContext::AppUnitsToIntCSSPixels(aH));
++                      nsPresContext::AppUnitsToIntCSSPixels(aH));
 +
 +    dirtyArea = aMatrix.Transform(dirtyArea);
 +
 +    return PDocumentRendererShmemChild::Send__delete__(__a, dirtyArea.X(), dirtyArea.Y(), 
-+						       dirtyArea.Width(), dirtyArea.Height(),
++                                                       dirtyArea.Width(), dirtyArea.Height(),
 +                                                       aBuf);
 +}
 +
-+
  bool
- TabChild::RecvregisterChromePackage(const nsString& aPackage,
-                                     const nsString& aBaseURI,
-                                     const PRUint32& aFlags)
+ TabChild::RecvactivateFrameEvent(const nsString& aType, const bool& capture)
  {
- 	XRE_RegisterChromePackage(aPackage, aBaseURI, aFlags);
- 	return true;
- }
+   nsCOMPtr<nsPIDOMWindow> window = do_GetInterface(mWebNav);
+   NS_ENSURE_TRUE(window, true);
+   nsCOMPtr<nsIDOMEventTarget> chromeHandler =
+     do_QueryInterface(window->GetChromeEventHandler());
+   NS_ENSURE_TRUE(chromeHandler, true);
 diff --git a/dom/ipc/TabChild.h b/dom/ipc/TabChild.h
 --- a/dom/ipc/TabChild.h
 +++ b/dom/ipc/TabChild.h
@@ -1416,7 +1394,7 @@ diff --git a/dom/ipc/TabChild.h b/dom/ipc/TabChild.h
              const PRUint32& flags,
              const bool& flush);
  
-+    virtual mozilla::ipc::PDocumentRendererShmemChild* AllocPDocumentRendererShmem(
++    virtual PDocumentRendererShmemChild* AllocPDocumentRendererShmem(
 +            const PRInt32& x,
 +            const PRInt32& y,
 +            const PRInt32& w,
@@ -1424,13 +1402,13 @@ diff --git a/dom/ipc/TabChild.h b/dom/ipc/TabChild.h
 +            const nsString& bgcolor,
 +            const PRUint32& flags,
 +            const bool& flush,
-+	    const gfxMatrix& aMatrix,
++            const gfxMatrix& aMatrix,
 +            const PRInt32& bufw,
 +            const PRInt32& bufh,
 +            Shmem& buf);
 +    virtual bool DeallocPDocumentRendererShmem(PDocumentRendererShmemChild* actor);
 +    virtual bool RecvPDocumentRendererShmemConstructor(
-+            mozilla::ipc::PDocumentRendererShmemChild *__a,
++            PDocumentRendererShmemChild *__a,
 +            const PRInt32& aX,
 +            const PRInt32& aY,
 +            const PRInt32& aW,
@@ -1438,7 +1416,7 @@ diff --git a/dom/ipc/TabChild.h b/dom/ipc/TabChild.h
 +            const nsString& bgcolor,
 +            const PRUint32& flags,
 +            const bool& flush,
-+	    const gfxMatrix& aMatrix,
++            const gfxMatrix& aMatrix,
 +            const PRInt32& aBufW,
 +            const PRInt32& aBufH,
 +            Shmem& aBuf);
@@ -1448,9 +1426,9 @@ diff --git a/dom/ipc/TabChild.h b/dom/ipc/TabChild.h
      JSContext* GetJSContext() { return mCx; }
  
      nsIPrincipal* GetPrincipal() { return mPrincipal; }
+ private:
+     bool InitTabChildGlobal();
  
-     virtual bool RecvregisterChromePackage(const nsString& aPackage,
-                                            const nsString& aBaseURI,
 diff --git a/dom/ipc/TabParent.cpp b/dom/ipc/TabParent.cpp
 --- a/dom/ipc/TabParent.cpp
 +++ b/dom/ipc/TabParent.cpp
@@ -1558,10 +1536,10 @@ diff --git a/dom/ipc/TabParent.h b/dom/ipc/TabParent.h
 +            const nsString& bgcolor,
 +            const PRUint32& flags,
 +            const bool& flush,
-+	    const gfxMatrix& aMatrix,
++            const gfxMatrix& aMatrix,
 +            const PRInt32& bufw,
 +            const PRInt32& bufh,
-+            Shmem &buf);
++            Shmem& buf);
 +    virtual bool DeallocPDocumentRendererShmem(PDocumentRendererShmemParent* actor);
 +
  protected:

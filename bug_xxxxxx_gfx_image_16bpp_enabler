@@ -23,7 +23,7 @@ diff --git a/widget/src/qt/nsNativeThemeQt.cpp b/widget/src/qt/nsNativeThemeQt.c
 diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
 --- a/widget/src/qt/nsWindow.cpp
 +++ b/widget/src/qt/nsWindow.cpp
-@@ -663,16 +663,18 @@ nsWindow::Invalidate(const nsIntRect &aR
+@@ -669,16 +669,18 @@ nsWindow::Invalidate(const nsIntRect &aR
                       PRBool        aIsSynchronous)
  {
      LOGDRAW(("Invalidate (rect) [%p,%p]: %d %d %d %d (sync: %d)\n", (void *)this,
@@ -42,27 +42,7 @@ diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
          if (widget)
              widget->repaint();
      }
-@@ -1013,19 +1015,16 @@ nsWindow::DoPaint(QPainter* aPainter, co
-     if (aOption)
-         r = aOption->exposedRect;
-     else
-         r = mWidget->boundingRect();
- 
-     if (r.isEmpty())
-         return nsEventStatus_eIgnore;
- 
--    if (r.isEmpty())
--        return nsEventStatus_eIgnore;
--
-     if (!mDirtyScrollArea.isEmpty())
-         mDirtyScrollArea = QRegion();
- 
-     gfxQtPlatform::RenderMode renderMode = gfxQtPlatform::GetPlatform()->GetRenderMode();
-     // Prepare offscreen buffers if RenderMode Xlib or Image
-     if (renderMode != gfxQtPlatform::RENDER_QPAINTER)
-         if (!UpdateOffScreenBuffers(QSize(r.width(), r.height()), QX11Info().depth()))
-             return nsEventStatus_eIgnore;
-@@ -1116,17 +1115,18 @@ nsWindow::DoPaint(QPainter* aPainter, co
+@@ -1117,17 +1119,18 @@ nsWindow::DoPaint(QPainter* aPainter, co
          if (gBufferPixmap->handle())
              aPainter->drawPixmap(QPoint(rect.x, rect.y), *gBufferPixmap,
                                   QRect(0, 0, rect.width, rect.height));
