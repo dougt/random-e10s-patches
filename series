@@ -6,14 +6,9 @@ bug_545632_16bpp_qt
 bug_xxxxxx_gfx_image_16bpp_enabler
 
 # IPC
-# bug_542907_unified_chrome_registry
-
-bug_544607_shmem_is_readable_writeable
 bug_524180_async_draw_window_using_shared_memory
 bug_XXXXXX_use_offscreen_surface_with_shmem_hack_never_check_in
 bug_524180_fire_event_on_async_canvas_draw
-bug_545237_ContentProcessParent_singleton
-bug_544623_shared_actor_tree
 
 # Places
 
