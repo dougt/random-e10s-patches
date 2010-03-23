@@ -457,7 +457,7 @@ diff --git a/content/base/src/nsFrameLoader.cpp b/content/base/src/nsFrameLoader
  {
  public:
    nsAsyncDocShellDestroyer(nsIDocShell* aDocShell)
-@@ -1516,16 +1518,18 @@ nsFrameLoader::TryNewProcess()
+@@ -1515,16 +1517,18 @@ nsFrameLoader::TryNewProcess()
      parentAsItem->GetRootTreeItem(getter_AddRefs(rootItem));
      nsCOMPtr<nsIDOMWindow> rootWin = do_GetInterface(rootItem);
      nsCOMPtr<nsIDOMChromeWindow> rootChromeWin = do_QueryInterface(rootWin);
@@ -479,26 +479,25 @@ diff --git a/content/base/src/nsFrameLoader.cpp b/content/base/src/nsFrameLoader
 diff --git a/dom/ipc/ContentProcessChild.cpp b/dom/ipc/ContentProcessChild.cpp
 --- a/dom/ipc/ContentProcessChild.cpp
 +++ b/dom/ipc/ContentProcessChild.cpp
-@@ -42,16 +42,18 @@
+@@ -40,16 +40,17 @@
+ #include <QApplication>
+ #endif
+ 
+ #include "ContentProcessChild.h"
+ #include "TabChild.h"
+ 
  #include "mozilla/ipc/TestShellChild.h"
  #include "mozilla/net/NeckoChild.h"
++#include "nsChromeRegistry.h"
  
  #include "nsXULAppAPI.h"
  
  #include "base/message_loop.h"
  #include "base/task.h"
  
-+#include "nsChromeRegistry.h"
-+
  using namespace mozilla::ipc;
  using namespace mozilla::net;
- 
- namespace mozilla {
- namespace dom {
- 
- ContentProcessChild* ContentProcessChild::sSingleton;
- 
-@@ -123,16 +125,25 @@ ContentProcessChild::AllocPNecko()
+@@ -136,16 +137,25 @@ ContentProcessChild::AllocPNecko()
  
  bool 
  ContentProcessChild::DeallocPNecko(PNeckoChild* necko)
@@ -527,25 +526,25 @@ diff --git a/dom/ipc/ContentProcessChild.cpp b/dom/ipc/ContentProcessChild.cpp
 diff --git a/dom/ipc/ContentProcessChild.h b/dom/ipc/ContentProcessChild.h
 --- a/dom/ipc/ContentProcessChild.h
 +++ b/dom/ipc/ContentProcessChild.h
-@@ -38,16 +38,17 @@
+@@ -35,16 +35,17 @@
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
  
  #ifndef mozilla_dom_ContentProcessChild_h
  #define mozilla_dom_ContentProcessChild_h
  
  #include "mozilla/dom/PContentProcessChild.h"
++#include "mozilla/chrome/ChromeTypes.h"
  
  #include "nsTArray.h"
  #include "nsAutoPtr.h"
-+#include "mozilla/chrome/ChromeTypes.h"
  
- namespace mozilla {
- namespace dom {
+ #ifdef MOZ_WIDGET_QT
+ class QApplication;
+ #endif
  
- class ContentProcessChild : public PContentProcessChild
- {
- public:
-     ContentProcessChild();
-@@ -66,16 +67,19 @@ public:
+@@ -70,16 +71,19 @@ public:
      virtual bool DeallocPIFrameEmbedding(PIFrameEmbeddingChild*);
  
      virtual PTestShellChild* AllocPTestShell();
@@ -683,7 +682,7 @@ diff --git a/dom/ipc/PContentProcess.ipdl b/dom/ipc/PContentProcess.ipdl
 diff --git a/dom/ipc/PIFrameEmbedding.ipdl b/dom/ipc/PIFrameEmbedding.ipdl
 --- a/dom/ipc/PIFrameEmbedding.ipdl
 +++ b/dom/ipc/PIFrameEmbedding.ipdl
-@@ -101,12 +101,15 @@ child:
+@@ -110,12 +110,15 @@ child:
       */
      activateFrameEvent(nsString aType, bool capture);
  
@@ -702,20 +701,7 @@ diff --git a/dom/ipc/PIFrameEmbedding.ipdl b/dom/ipc/PIFrameEmbedding.ipdl
 diff --git a/dom/ipc/TabChild.cpp b/dom/ipc/TabChild.cpp
 --- a/dom/ipc/TabChild.cpp
 +++ b/dom/ipc/TabChild.cpp
-@@ -49,28 +49,30 @@
- #include "mozilla/ipc/DocumentRendererChild.h"
- #include "nsIInterfaceRequestorUtils.h"
- #include "nsPIDOMWindow.h"
- #include "nsIDOMWindowUtils.h"
- #include "nsISupportsImpl.h"
- #include "nsIWebBrowserFocus.h"
- #include "nsIDOMEvent.h"
- #include "nsIPrivateDOMEvent.h"
-+#include "nsXULAppAPI.h"
- #include "nsIComponentManager.h"
- #include "nsIServiceManager.h"
- #include "nsIJSRuntimeService.h"
- #include "nsContentUtils.h"
+@@ -61,16 +61,17 @@
  #include "nsIDOMClassInfo.h"
  #include "nsIXPCSecurityManager.h"
  #include "nsIJSContextStack.h"
@@ -728,12 +714,12 @@ diff --git a/dom/ipc/TabChild.cpp b/dom/ipc/TabChild.cpp
  
  #ifdef MOZ_WIDGET_QT
  #include <QX11EmbedWidget>
- #include <QApplication>
  #include <QGraphicsView>
  #include <QGraphicsWidget>
  #endif
  
-@@ -480,16 +482,33 @@ TabChild::RecvPDocumentRendererConstruct
+ #ifdef MOZ_WIDGET_GTK2
+@@ -481,16 +482,33 @@ TabChild::RecvPDocumentRendererConstruct
                                        width, height, data);
      if (!ret)
          return true; // silently ignore
@@ -770,7 +756,7 @@ diff --git a/dom/ipc/TabChild.cpp b/dom/ipc/TabChild.cpp
 diff --git a/dom/ipc/TabChild.h b/dom/ipc/TabChild.h
 --- a/dom/ipc/TabChild.h
 +++ b/dom/ipc/TabChild.h
-@@ -189,16 +189,23 @@ public:
+@@ -194,16 +194,23 @@ public:
              const PRUint32& flags,
              const bool& flush);
  
@@ -934,7 +920,7 @@ diff --git a/netwerk/protocol/res/src/nsResProtocolHandler.h b/netwerk/protocol/
 diff --git a/toolkit/xre/Makefile.in b/toolkit/xre/Makefile.in
 --- a/toolkit/xre/Makefile.in
 +++ b/toolkit/xre/Makefile.in
-@@ -176,16 +176,17 @@ endif
+@@ -180,16 +180,17 @@ endif
  
  include $(topsrcdir)/config/config.mk
  include $(topsrcdir)/ipc/chromium/chromium-config.mk

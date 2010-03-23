@@ -1,38 +1,37 @@
 diff --git a/dom/ipc/ContentProcessChild.cpp b/dom/ipc/ContentProcessChild.cpp
 --- a/dom/ipc/ContentProcessChild.cpp
 +++ b/dom/ipc/ContentProcessChild.cpp
-@@ -36,26 +36,30 @@
-  *
-  * ***** END LICENSE BLOCK ***** */
+@@ -41,24 +41,29 @@
+ #endif
  
  #include "ContentProcessChild.h"
  #include "TabChild.h"
  
  #include "mozilla/ipc/TestShellChild.h"
  #include "mozilla/net/NeckoChild.h"
+ #include "nsChromeRegistry.h"
 +#include "History.h"
++#include "nsDocShellCID.h"
++#include "nsNetUtil.h"
++
  
  #include "nsXULAppAPI.h"
  
-+#include "nsDocShellCID.h"
-+#include "nsNetUtil.h"
  #include "base/message_loop.h"
  #include "base/task.h"
- 
- #include "nsChromeRegistry.h"
  
  using namespace mozilla::ipc;
  using namespace mozilla::net;
 +using namespace mozilla::places;
  
+ #ifdef MOZ_WIDGET_QT
+ extern int    gArgc;
+ extern char **gArgv;
+ #endif
+ 
  namespace mozilla {
  namespace dom {
- 
- ContentProcessChild* ContentProcessChild::sSingleton;
- 
- ContentProcessChild::ContentProcessChild()
-     : mQuit(PR_FALSE)
-@@ -154,10 +158,29 @@ ContentProcessChild::ActorDestroy(ActorD
+@@ -166,10 +171,29 @@ ContentProcessChild::ActorDestroy(ActorD
          NS_WARNING("shutting down because of crash!");
  
      mQuit = PR_TRUE;
@@ -65,7 +64,7 @@ diff --git a/dom/ipc/ContentProcessChild.cpp b/dom/ipc/ContentProcessChild.cpp
 diff --git a/dom/ipc/ContentProcessChild.h b/dom/ipc/ContentProcessChild.h
 --- a/dom/ipc/ContentProcessChild.h
 +++ b/dom/ipc/ContentProcessChild.h
-@@ -72,16 +72,19 @@ public:
+@@ -76,16 +76,19 @@ public:
      virtual PNeckoChild* AllocPNecko();
      virtual bool DeallocPNecko(PNeckoChild*);
  

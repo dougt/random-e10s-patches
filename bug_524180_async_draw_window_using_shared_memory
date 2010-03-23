@@ -1087,7 +1087,7 @@ diff --git a/dom/interfaces/html/nsIDOMHTMLCanvasElement.idl b/dom/interfaces/ht
 diff --git a/dom/ipc/ContentProcessChild.h b/dom/ipc/ContentProcessChild.h
 --- a/dom/ipc/ContentProcessChild.h
 +++ b/dom/ipc/ContentProcessChild.h
-@@ -67,16 +67,18 @@ public:
+@@ -71,16 +71,18 @@ public:
      virtual bool DeallocPIFrameEmbedding(PIFrameEmbeddingChild*);
  
      virtual PTestShellChild* AllocPTestShell();
@@ -1283,8 +1283,8 @@ diff --git a/dom/ipc/TabChild.cpp b/dom/ipc/TabChild.cpp
  #include "nsIWebBrowserFocus.h"
  #include "nsIDOMEvent.h"
  #include "nsIPrivateDOMEvent.h"
- #include "nsXULAppAPI.h"
-@@ -63,16 +64,17 @@
+ #include "nsIComponentManager.h"
+@@ -62,16 +63,17 @@
  #include "nsIXPCSecurityManager.h"
  #include "nsIJSContextStack.h"
  #include "nsComponentManagerUtils.h"
@@ -1297,12 +1297,12 @@ diff --git a/dom/ipc/TabChild.cpp b/dom/ipc/TabChild.cpp
  
  #ifdef MOZ_WIDGET_QT
  #include <QX11EmbedWidget>
- #include <QApplication>
  #include <QGraphicsView>
  #include <QGraphicsWidget>
  #endif
  
-@@ -497,16 +499,82 @@ TabChild::RecvPDocumentRendererConstruct
+ #ifdef MOZ_WIDGET_GTK2
+@@ -481,16 +483,82 @@ TabChild::RecvPDocumentRendererConstruct
      bool ret = render->RenderDocument(window, aX, aY, aW, aH, bgcolor, flags, flush,
                                        width, height, data);
      if (!ret)
