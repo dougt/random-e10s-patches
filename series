@@ -6,9 +6,7 @@ bug_545632_16bpp_qt
 bug_xxxxxx_gfx_image_16bpp_enabler
 
 # IPC
-bug_524180_async_draw_window_using_shared_memory
 bug_XXXXXX_use_offscreen_surface_with_shmem_hack_never_check_in
-bug_524180_fire_event_on_async_canvas_draw
 
 # Places
 
