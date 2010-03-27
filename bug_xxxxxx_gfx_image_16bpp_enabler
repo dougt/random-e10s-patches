@@ -23,26 +23,7 @@ diff --git a/widget/src/qt/nsNativeThemeQt.cpp b/widget/src/qt/nsNativeThemeQt.c
 diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
 --- a/widget/src/qt/nsWindow.cpp
 +++ b/widget/src/qt/nsWindow.cpp
-@@ -669,16 +669,18 @@ nsWindow::Invalidate(const nsIntRect &aR
-                      PRBool        aIsSynchronous)
- {
-     LOGDRAW(("Invalidate (rect) [%p,%p]: %d %d %d %d (sync: %d)\n", (void *)this,
-              (void*)mWidget,aRect.x, aRect.y, aRect.width, aRect.height, aIsSynchronous));
- 
-     if (!mWidget)
-         return NS_OK;
- 
-+    mDirtyScrollArea = mDirtyScrollArea.united(QRect(aRect.x, aRect.y, aRect.width, aRect.height));
-+
-     mWidget->update(aRect.x, aRect.y, aRect.width, aRect.height);
- 
-     // QGraphicsItems cannot trigger a repaint themselves, so we start it on the view
-     if (aIsSynchronous) {
-         QWidget *widget = GetViewWidget();
-         if (widget)
-             widget->repaint();
-     }
-@@ -1117,17 +1119,18 @@ nsWindow::DoPaint(QPainter* aPainter, co
+@@ -1125,17 +1125,18 @@ nsWindow::DoPaint(QPainter* aPainter, co
          if (gBufferPixmap->handle())
              aPainter->drawPixmap(QPoint(rect.x, rect.y), *gBufferPixmap,
                                   QRect(0, 0, rect.width, rect.height));
