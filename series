@@ -1,13 +1,12 @@
+attachment.cgi?id=436590
+attachment.cgi?id=436591
 
 # GFX
 bug_552142_fast_scale_branch_pixman
 bug_545632_16bpp
 bug_545632_16bpp_qt
 bug_xxxxxx_gfx_image_16bpp_enabler
-
-# IPC
-bug_XXXXXX_use_offscreen_surface_with_shmem_hack_never_check_in
+QtBustageInGfx
 
 # Places
-
 #bug_516728_is_visited

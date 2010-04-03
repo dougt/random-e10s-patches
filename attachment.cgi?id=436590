@@ -1,0 +1,1756 @@
+diff --git a/content/canvas/src/nsCanvasRenderingContext2D.cpp b/content/canvas/src/nsCanvasRenderingContext2D.cpp
+--- a/content/canvas/src/nsCanvasRenderingContext2D.cpp
++++ b/content/canvas/src/nsCanvasRenderingContext2D.cpp
+@@ -119,16 +119,18 @@
+ #  include "mozilla/dom/ContentProcessParent.h"
+ #  include "mozilla/ipc/PDocumentRendererParent.h"
+ #  include "mozilla/ipc/PDocumentRendererShmemParent.h"
+ #  include "mozilla/dom/PIFrameEmbeddingParent.h"
+ #  include "mozilla/ipc/DocumentRendererParent.h"
+ #  include "mozilla/ipc/DocumentRendererShmemParent.h"
+ // windows.h (included by chromium code) defines this, in its infinite wisdom
+ #  undef DrawText
++
++using mozilla::ipc::SharedMemory;
+ #endif
+ 
+ using namespace mozilla;
+ 
+ #ifndef M_PI
+ #define M_PI		3.14159265358979323846
+ #define M_PI_2		1.57079632679489661923
+ #endif
+@@ -954,20 +956,22 @@ nsCanvasRenderingContext2D::Redraw(const
+ }
+ 
+ #ifdef MOZ_IPC
+ bool
+ nsCanvasRenderingContext2D::CreateShmemSegments(PRInt32 width, PRInt32 height,
+                                                 gfxASurface::gfxImageFormat format)
+ {
+     if (!mozilla::dom::ContentProcessParent::GetSingleton()->
+-                AllocShmem(width * height * 4, &mFrontBuffer))
++                AllocShmem(width * height * 4, SharedMemory::TYPE_SYSV,
++                           &mFrontBuffer))
+         return false;
+     if (!mozilla::dom::ContentProcessParent::GetSingleton()->
+-                AllocShmem(width * height * 4, &mBackBuffer))
++                AllocShmem(width * height * 4, SharedMemory::TYPE_SYSV,
++                           &mBackBuffer))
+         return false;
+ 
+     mBackSurface = new gfxImageSurface(mBackBuffer.get<unsigned char>(),
+                                        gfxIntSize(width, height),
+                                        width * 4, format);
+ 
+     return true;
+ }
+diff --git a/ipc/glue/Makefile.in b/ipc/glue/Makefile.in
+--- a/ipc/glue/Makefile.in
++++ b/ipc/glue/Makefile.in
+@@ -56,16 +56,18 @@ EXPORTS_IPC = IPCMessageUtils.h
+ EXPORTS_mozilla/ipc = \
+   AsyncChannel.h \
+   BrowserProcessSubThread.h \
+   GeckoChildProcessHost.h \
+   MozillaChildThread.h \
+   ProtocolUtils.h \
+   RPCChannel.h \
+   SharedMemory.h \
++  SharedMemoryBasic.h \
++  SharedMemorySysV.h \
+   Shmem.h \
+   SyncChannel.h \
+   ScopedXREEmbed.h \
+   $(NULL)
+ 
+ ENABLE_CXX_EXCEPTIONS = 1
+ 
+ CPPSRCS += \
+diff --git a/ipc/glue/ProtocolUtils.h b/ipc/glue/ProtocolUtils.h
+--- a/ipc/glue/ProtocolUtils.h
++++ b/ipc/glue/ProtocolUtils.h
+@@ -85,71 +85,25 @@ public:
+     typedef base::ProcessHandle ProcessHandle;
+ 
+     virtual int32 Register(ListenerT*) = 0;
+     virtual int32 RegisterID(ListenerT*, int32) = 0;
+     virtual ListenerT* Lookup(int32) = 0;
+     virtual void Unregister(int32) = 0;
+     virtual void RemoveManagee(int32, ListenerT*) = 0;
+ 
+-    virtual Shmem::SharedMemory* CreateSharedMemory(size_t, int32*) = 0;
++    virtual Shmem::SharedMemory* CreateSharedMemory(
++        size_t, SharedMemory::SharedMemoryType, int32*) = 0;
+     virtual Shmem::SharedMemory* LookupSharedMemory(int32) = 0;
+ 
+     // XXX odd duck, acknowledged
+     virtual ProcessHandle OtherProcess() const = 0;
+ };
+ 
+ 
+-// This message is automatically sent by IPDL-generated code when a
+-// new shmem segment is allocated.  It should never be used directly.
+-class __internal__ipdl__ShmemCreated : public IPC::Message
+-{
+-private:
+-    typedef Shmem::id_t id_t;
+-    typedef Shmem::SharedMemoryHandle SharedMemoryHandle;
+-
+-public:
+-    enum { ID = SHMEM_CREATED_MESSAGE_TYPE };
+-
+-    __internal__ipdl__ShmemCreated(
+-        int32 routingId,
+-        const SharedMemoryHandle& aHandle,
+-        const id_t& aIPDLId,
+-        const size_t& aSize) :
+-        IPC::Message(routingId, ID, PRIORITY_NORMAL)
+-    {
+-        IPC::WriteParam(this, aHandle);
+-        IPC::WriteParam(this, aIPDLId);
+-        IPC::WriteParam(this, aSize);
+-    }
+-
+-    static bool Read(const Message* msg,
+-                     SharedMemoryHandle* aHandle,
+-                     id_t* aIPDLId,
+-                     size_t* aSize)
+-    {
+-        void* iter = 0;
+-        if (!IPC::ReadParam(msg, &iter, aHandle))
+-            return false;
+-        if (!IPC::ReadParam(msg, &iter, aIPDLId))
+-            return false;
+-        if (!IPC::ReadParam(msg, &iter, aSize))
+-            return false;
+-        msg->EndRead(iter);
+-        return true;
+-    }
+-
+-    void Log(const std::string& aPrefix,
+-             FILE* aOutf) const
+-    {
+-        fputs("(special ShmemCreated msg)", aOutf);
+-    }
+-};
+-
+-
+ inline bool
+ LoggingEnabled()
+ {
+ #if defined(DEBUG)
+     return !!PR_GetEnv("MOZ_IPC_MESSAGE_LOG");
+ #else
+     return false;
+ #endif
+diff --git a/ipc/glue/SharedMemory.h b/ipc/glue/SharedMemory.h
+--- a/ipc/glue/SharedMemory.h
++++ b/ipc/glue/SharedMemory.h
+@@ -35,18 +35,16 @@
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ #ifndef mozilla_ipc_SharedMemory_h
+ #define mozilla_ipc_SharedMemory_h
+ 
+-#include "base/shared_memory.h"
+-
+ #include "nsDebug.h"
+ 
+ //
+ // This is a low-level wrapper around platform shared memory.  Don't
+ // use it directly; use Shmem allocated through IPDL interfaces.
+ //
+ namespace {
+ enum Rights {
+@@ -54,45 +52,35 @@ enum Rights {
+   RightsRead = 1 << 0,
+   RightsWrite = 1 << 1
+ };
+ }
+ 
+ namespace mozilla {
+ namespace ipc {
+ 
+-class SharedMemory : public base::SharedMemory
++class SharedMemory
+ {
+ public:
+-  typedef base::SharedMemoryHandle SharedMemoryHandle;
++  enum SharedMemoryType {
++    TYPE_BASIC,
++    TYPE_SYSV,
++    TYPE_UNKNOWN
++  };
+ 
+-  SharedMemory() :
+-    base::SharedMemory(),
+-    mSize(0)
+-  {
+-  }
++  virtual ~SharedMemory() { }
+ 
+-  SharedMemory(const SharedMemoryHandle& aHandle) :
+-    base::SharedMemory(aHandle, false),
+-    mSize(0)
+-  {
+-  }
++  virtual size_t Size() const = 0;
+ 
+-  bool Map(size_t nBytes)
+-  {
+-    bool ok = base::SharedMemory::Map(nBytes);
+-    if (ok)
+-      mSize = nBytes;
+-    return ok;
+-  }
++  virtual void* memory() const = 0;
+ 
+-  size_t Size()
+-  {
+-    return mSize;
+-  }
++  virtual bool Create(size_t size) = 0;
++  virtual bool Map(size_t nBytes) = 0;
++
++  virtual SharedMemoryType Type() const = 0;
+ 
+   void
+   Protect(char* aAddr, size_t aSize, int aRights)
+   {
+     char* memStart = reinterpret_cast<char*>(memory());
+     if (!memStart)
+       NS_RUNTIMEABORT("SharedMemory region points at NULL!");
+     char* memEnd = memStart + Size();
+@@ -107,19 +95,15 @@ public:
+       NS_RUNTIMEABORT("attempt to Protect() a region outside this SharedMemory");
+ 
+     // checks alignment etc.
+     SystemProtect(aAddr, aSize, aRights);
+   }
+ 
+   static void SystemProtect(char* aAddr, size_t aSize, int aRights);
+   static size_t SystemPageSize();
+-
+-private:
+-  // NB: we have to track this because shared_memory_win.cc doesn't
+-  size_t mSize;
+ };
+ 
+ } // namespace ipc
+ } // namespace mozilla
+ 
+ 
+ #endif // ifndef mozilla_ipc_SharedMemory_h
+diff --git a/ipc/glue/SharedMemoryBasic.h b/ipc/glue/SharedMemoryBasic.h
+new file mode 100644
+--- /dev/null
++++ b/ipc/glue/SharedMemoryBasic.h
+@@ -0,0 +1,135 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
++ * vim: sw=2 ts=8 et :
++ */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Mozilla IPC.
++ *
++ * The Initial Developer of the Original Code is
++ *   The Mozilla Foundation
++ * Portions created by the Initial Developer are Copyright (C) 2009
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#ifndef mozilla_ipc_SharedMemoryBasic_h
++#define mozilla_ipc_SharedMemoryBasic_h
++
++#include "base/shared_memory.h"
++#include "SharedMemory.h"
++
++#include "nsDebug.h"
++
++//
++// This is a low-level wrapper around platform shared memory.  Don't
++// use it directly; use Shmem allocated through IPDL interfaces.
++//
++
++namespace mozilla {
++namespace ipc {
++
++class SharedMemoryBasic : public SharedMemory
++{
++public:
++  typedef base::SharedMemoryHandle Handle;
++
++  SharedMemoryBasic() :
++    mSize(0)
++  {
++  }
++
++  SharedMemoryBasic(const Handle& aHandle) :
++    mSharedMemory(aHandle, false),
++    mSize(0)
++  {
++  }
++
++  NS_OVERRIDE
++  virtual bool Create(size_t aNbytes)
++  {
++    return mSharedMemory.Create("", false, false, aNbytes);
++  }
++
++  NS_OVERRIDE
++  virtual bool Map(size_t nBytes)
++  {
++    bool ok = mSharedMemory.Map(nBytes);
++    if (ok)
++      mSize = nBytes;
++    return ok;
++  }
++
++  NS_OVERRIDE
++  virtual size_t Size() const
++  {
++    return mSize;
++  }
++
++  NS_OVERRIDE
++  virtual void* memory() const
++  {
++    return mSharedMemory.memory();
++  }
++
++  NS_OVERRIDE
++  virtual SharedMemoryType Type() const
++  {
++    return TYPE_BASIC;
++  }
++
++  static Handle NULLHandle()
++  {
++    return base::SharedMemory::NULLHandle();
++  }
++
++  static bool IsHandleValid(const Handle &aHandle)
++  {
++    return base::SharedMemory::IsHandleValid(aHandle);
++  }
++
++  bool ShareToProcess(base::ProcessHandle process,
++                      Handle* new_handle)
++  {
++    base::SharedMemoryHandle handle;
++    bool ret = mSharedMemory.ShareToProcess(process, &handle);
++    if (ret)
++      *new_handle = handle;
++    return ret;
++  }
++
++private:
++  base::SharedMemory mSharedMemory;
++  // NB: we have to track this because shared_memory_win.cc doesn't
++  size_t mSize;
++};
++
++} // namespace ipc
++} // namespace mozilla
++
++
++#endif // ifndef mozilla_ipc_SharedMemoryBasic_h
+diff --git a/ipc/glue/SharedMemorySysV.h b/ipc/glue/SharedMemorySysV.h
+new file mode 100644
+--- /dev/null
++++ b/ipc/glue/SharedMemorySysV.h
+@@ -0,0 +1,196 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
++ * vim: sw=2 ts=8 et :
++ */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Mozilla IPC.
++ *
++ * The Initial Developer of the Original Code is
++ *   The Mozilla Foundation
++ * Portions created by the Initial Developer are Copyright (C) 2009
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#ifndef mozilla_ipc_SharedMemorySysV_h
++#define mozilla_ipc_SharedMemorySysV_h
++
++#ifdef OS_LINUX
++
++// SysV shared memory isn't available on Windows, but this makes
++// #ifdefs make a little more sense.
++#define MOZ_HAVE_SHAREDMEMORYSYSV
++
++#include "SharedMemory.h"
++
++#include "nsDebug.h"
++
++#include <errno.h>
++#include <fcntl.h>
++#include <string.h>
++#include <sys/ipc.h>
++#include <sys/shm.h>
++
++//
++// This is a low-level wrapper around platform shared memory.  Don't
++// use it directly; use Shmem allocated through IPDL interfaces.
++//
++
++namespace mozilla {
++namespace ipc {
++
++
++class SharedMemorySysV : public SharedMemory
++{
++public:
++  typedef int Handle;
++
++  SharedMemorySysV() :
++    mHandle(-1),
++    mData(nsnull),
++    mSize(0)
++  {
++  }
++
++  SharedMemorySysV(Handle aHandle) :
++    mHandle(aHandle),
++    mData(nsnull),
++    mSize(0)
++  {
++  }
++
++  virtual ~SharedMemorySysV()
++  {
++    shmdt(mData);
++    mHandle = -1;
++    mData = nsnull;
++    mSize = 0;
++    
++  }
++
++  NS_OVERRIDE
++  virtual bool Create(size_t aNbytes)
++  {
++    int id = shmget(IPC_PRIVATE, aNbytes, IPC_CREAT | 0600);
++    if (id == -1)
++      return false;
++
++    mHandle = id;
++
++    if (!Map(aNbytes))
++      return false;
++
++    // NB: in this window, we're vulnerable to crashing and
++    // perma-leaking the segment
++    if (-1 == shmctl(id, IPC_RMID, NULL))
++      return false;
++
++    return true;
++  }
++
++  NS_OVERRIDE
++  virtual bool Map(size_t nBytes)
++  {
++    // already mapped
++    if (mData)
++      return true;
++
++    if (!IsHandleValid(mHandle))
++      return false;
++
++    void* mem = shmat(mHandle, nsnull, 0);
++    if (mem == (void*) -1) {
++      fprintf(stderr, "shmat(): %s (%d)\n", strerror(errno), errno);
++      return false;
++    }
++
++    // Mark the handle as deleted so that, should this process go away, the
++    // segment is cleaned up.
++    shmctl(mHandle, IPC_RMID, 0);
++
++    mData = mem;
++    mSize = nBytes;
++
++#ifdef NS_DEBUG
++    struct shmid_ds info;
++    if (shmctl(mHandle, IPC_STAT, &info) < 0)
++      return false;
++
++    NS_ABORT_IF_FALSE(nBytes <= info.shm_segsz,
++                      "Segment doesn't have enough space!");
++#endif
++
++    return true;
++  }
++
++  NS_OVERRIDE
++  virtual size_t Size() const
++  {
++    return mSize;
++  }
++
++  NS_OVERRIDE
++  virtual void* memory() const
++  {
++    return mData;
++  }
++
++  NS_OVERRIDE
++  virtual SharedMemoryType Type() const
++  {
++    return TYPE_SYSV;
++  }
++
++  Handle GetHandle() const
++  {
++    NS_ABORT_IF_FALSE(IsHandleValid(mHandle), "invalid handle");
++    return mHandle;
++  }
++
++  static Handle NULLHandle()
++  {
++    return -1;
++  }
++
++  static bool IsHandleValid(Handle aHandle)
++  {
++    return aHandle != -1;
++  }
++
++private:
++  Handle mHandle;
++  void* mData;
++  size_t mSize;
++};
++
++} // namespace ipc
++} // namespace mozilla
++
++#endif // OS_LINUX
++
++#endif // ifndef mozilla_ipc_SharedMemorySysV_h
+diff --git a/ipc/glue/Shmem.cpp b/ipc/glue/Shmem.cpp
+--- a/ipc/glue/Shmem.cpp
++++ b/ipc/glue/Shmem.cpp
+@@ -37,43 +37,173 @@
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ #include <math.h>
+ 
+ #include "Shmem.h"
+ 
++#include "ProtocolUtils.h"
++#include "SharedMemoryBasic.h"
++#include "SharedMemorySysV.h"
++
+ #include "nsAutoPtr.h"
+ 
+ 
++namespace mozilla {
++namespace ipc {
++
++class ShmemCreated : public IPC::Message
++{
++private:
++  typedef Shmem::id_t id_t;
++
++public:
++  ShmemCreated(int32 routingId,
++               const id_t& aIPDLId,
++               const size_t& aSize,
++               const SharedMemoryBasic::Handle& aHandle) :
++    IPC::Message(routingId, SHMEM_CREATED_MESSAGE_TYPE, PRIORITY_NORMAL)
++  {
++    IPC::WriteParam(this, aIPDLId);
++    IPC::WriteParam(this, aSize);
++    IPC::WriteParam(this, int32(SharedMemory::TYPE_BASIC)),
++    IPC::WriteParam(this, aHandle);
++  }
++
++  // Instead of a single Read() function, we have ReadInfo() and
++  // ReadHandle().  The reason is that the handle type is specific to
++  // the shmem type.  These functions should only be called in the
++  // order ReadInfo(); ReadHandle();, and only once each.
++
++  static bool
++  ReadInfo(const Message* msg, void** iter,
++           id_t* aIPDLId,
++           size_t* aSize,
++           SharedMemory::SharedMemoryType* aType)
++  {
++    if (!IPC::ReadParam(msg, iter, aIPDLId) ||
++        !IPC::ReadParam(msg, iter, aSize) ||
++        !IPC::ReadParam(msg, iter, reinterpret_cast<int32*>(aType)))
++      return false;
++    return true;
++  }
++
++  static bool
++  ReadHandle(const Message* msg, void** iter,
++             SharedMemoryBasic::Handle* aHandle)
++  {
++    if (!IPC::ReadParam(msg, iter, aHandle))
++      return false;
++    msg->EndRead(*iter);
++    return true;
++  }
++
++#ifdef MOZ_HAVE_SHAREDMEMORYSYSV
++  ShmemCreated(int32 routingId,
++               const id_t& aIPDLId,
++               const size_t& aSize,
++               const SharedMemorySysV::Handle& aHandle) :
++    IPC::Message(routingId, SHMEM_CREATED_MESSAGE_TYPE, PRIORITY_NORMAL)
++  {
++    IPC::WriteParam(this, aIPDLId);
++    IPC::WriteParam(this, aSize);
++    IPC::WriteParam(this, int32(SharedMemory::TYPE_SYSV)),
++    IPC::WriteParam(this, aHandle);
++  }
++
++  static bool
++  ReadHandle(const Message* msg, void** iter,
++             SharedMemorySysV::Handle* aHandle)
++  {
++    if (!IPC::ReadParam(msg, iter, aHandle))
++      return false;
++    msg->EndRead(*iter);
++    return true;
++  }
++#endif
++
++  void Log(const std::string& aPrefix,
++           FILE* aOutf) const
++  {
++    fputs("(special ShmemCreated msg)", aOutf);
++  }
++};
++
++static Shmem::SharedMemory*
++CreateSegment(size_t aNBytes, SharedMemorySysV::Handle aHandle)
++{
++  nsAutoPtr<SharedMemory> segment;
++
++  if (SharedMemorySysV::IsHandleValid(aHandle)) {
++    segment = new SharedMemorySysV(aHandle);
++  }
++  else {
++    segment = new SharedMemorySysV();
++
++    if (!segment->Create(aNBytes))
++      return 0;
++  }
++  if (!segment->Map(aNBytes))
++    return 0;
++  return segment.forget();
++}
++
++static Shmem::SharedMemory*
++CreateSegment(size_t aNBytes, SharedMemoryBasic::Handle aHandle)
++{
++  nsAutoPtr<SharedMemory> segment;
++
++  if (SharedMemoryBasic::IsHandleValid(aHandle)) {
++    segment = new SharedMemoryBasic(aHandle);
++  }
++  else {
++    segment = new SharedMemoryBasic();
++
++    if (!segment->Create(aNBytes))
++      return 0;
++  }
++  if (!segment->Map(aNBytes))
++    return 0;
++  return segment.forget();
++}
++
++static void
++DestroySegment(SharedMemory* aSegment)
++{
++  // the SharedMemory dtor closes and unmaps the actual OS shmem segment
++  delete aSegment;
++}
++
++static size_t
++PageAlignedSize(size_t aSize)
++{
++  size_t pageSize = SharedMemory::SystemPageSize();
++  size_t nPagesNeeded = int(ceil(double(aSize) / double(pageSize)));
++  return pageSize * nPagesNeeded;
++}
++
++
+ #if defined(DEBUG)
++
+ static const char sMagic[] =
+     "This little piggy went to market.\n"
+     "This little piggy stayed at home.\n"
+     "This little piggy has roast beef,\n"
+     "This little piggy had none.\n"
+     "And this little piggy cried \"Wee! Wee! Wee!\" all the way home";
+-#endif
+ 
+-namespace mozilla {
+-namespace ipc {
+ 
+-
+-#if defined(DEBUG)
+-
+-namespace {
+-
+-struct Header
+-{
++struct Header {
+   size_t mSize;
+   char mMagic[sizeof(sMagic)];
+ };
+ 
+-void
++static void
+ GetSections(Shmem::SharedMemory* aSegment,
+             char** aFrontSentinel,
+             char** aData,
+             char** aBackSentinel)
+ {
+   NS_ABORT_IF_FALSE(aSegment && aFrontSentinel && aData && aBackSentinel,
+                     "NULL param(s)");
+ 
+@@ -81,17 +211,33 @@ GetSections(Shmem::SharedMemory* aSegmen
+   NS_ABORT_IF_FALSE(*aFrontSentinel, "NULL memory()");
+ 
+   size_t pageSize = Shmem::SharedMemory::SystemPageSize();
+   *aData = *aFrontSentinel + pageSize;
+ 
+   *aBackSentinel = *aFrontSentinel + aSegment->Size() - pageSize;
+ }
+ 
+-} // namespace <anon>
++static void
++Protect(SharedMemory* aSegment)
++{
++  NS_ABORT_IF_FALSE(aSegment, "NULL segment");
++  aSegment->Protect(reinterpret_cast<char*>(aSegment->memory()),
++                    aSegment->Size(),
++                    RightsNone);
++}
++
++static void
++Unprotect(SharedMemory* aSegment)
++{
++  NS_ABORT_IF_FALSE(aSegment, "NULL segment");
++  aSegment->Protect(reinterpret_cast<char*>(aSegment->memory()),
++                    aSegment->Size(),
++                    RightsRead | RightsWrite);
++}
+ 
+ //
+ // In debug builds, we specially allocate shmem segments.  The layout
+ // is as follows
+ //
+ //   Page 0: "front sentinel"
+ //     size of mapping
+ //     magic bytes
+@@ -182,41 +328,43 @@ Shmem::AssertInvariants() const
+   // if the segment isn't owned by the current process, these will
+   // trigger SIGSEGV
+   char checkMappingFront = *reinterpret_cast<char*>(mData);
+   char checkMappingBack = *(reinterpret_cast<char*>(mData) + mSize - 1);
+   checkMappingFront = checkMappingBack; // avoid "unused" warnings
+ }
+ 
+ void
+-Shmem::Protect(SharedMemory* aSegment)
++Shmem::RevokeRights(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead)
+ {
+-  NS_ABORT_IF_FALSE(aSegment, "NULL segment");
+-  aSegment->Protect(reinterpret_cast<char*>(aSegment->memory()),
+-                    aSegment->Size(),
+-                    RightsNone);
++  AssertInvariants();
++  Protect(mSegment);
+ }
+ 
+-void
+-Shmem::Unprotect(SharedMemory* aSegment)
+-{
+-  NS_ABORT_IF_FALSE(aSegment, "NULL segment");
+-  aSegment->Protect(reinterpret_cast<char*>(aSegment->memory()),
+-                    aSegment->Size(),
+-                    RightsRead | RightsWrite);
+-}
+-
++// static
+ Shmem::SharedMemory*
+ Shmem::Alloc(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead,
+              size_t aNBytes,
++             SharedMemoryType aType,
+              bool aProtect)
+ {
+   size_t pageSize = SharedMemory::SystemPageSize();
++  SharedMemory* segment = nsnull;
+   // |2*pageSize| is for the front and back sentinel
+-  SharedMemory* segment = CreateSegment(PageAlignedSize(aNBytes + 2*pageSize));
++  size_t segmentSize = PageAlignedSize(aNBytes + 2*pageSize);
++
++  if (aType == SharedMemory::TYPE_BASIC)
++    segment = CreateSegment(segmentSize, SharedMemoryBasic::NULLHandle());
++#ifdef MOZ_HAVE_SHAREDMEMORYSYSV
++  else if (aType == SharedMemory::TYPE_SYSV)
++    segment = CreateSegment(segmentSize, SharedMemorySysV::NULLHandle());
++#endif
++  else
++    NS_RUNTIMEABORT("unknown shmem type");
++
+   if (!segment)
+     return 0;
+ 
+   char *frontSentinel;
+   char *data;
+   char *backSentinel;
+   GetSections(segment, &frontSentinel, &data, &backSentinel);
+ 
+@@ -226,38 +374,71 @@ Shmem::Alloc(IHadBetterBeIPDLCodeCalling
+   header->mSize = aNBytes;
+ 
+   if (aProtect)
+     Protect(segment);
+ 
+   return segment;
+ }
+ 
++// static
+ Shmem::SharedMemory*
+ Shmem::OpenExisting(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead,
+-                    SharedMemoryHandle aHandle,
+-                    size_t aNBytes,
++                    const IPC::Message& aDescriptor,
++                    id_t* aId,
+                     bool aProtect)
+ {
+-  if (!SharedMemory::IsHandleValid(aHandle))
+-    NS_RUNTIMEABORT("trying to open invalid handle");
++  if (SHMEM_CREATED_MESSAGE_TYPE != aDescriptor.type())
++    NS_RUNTIMEABORT("expected 'shmem created' message");
+ 
++  void* iter = 0;
++  SharedMemory::SharedMemoryType type;
++  size_t size;
++  if (!ShmemCreated::ReadInfo(&aDescriptor, &iter, aId, &size, &type))
++    return 0;
++
++  SharedMemory* segment = 0;
+   size_t pageSize = SharedMemory::SystemPageSize();
+   // |2*pageSize| is for the front and back sentinels
+-  SharedMemory* segment = CreateSegment(PageAlignedSize(aNBytes + 2*pageSize),
+-                                        aHandle);
++  size_t segmentSize = PageAlignedSize(size + 2*pageSize);
++
++  if (SharedMemory::TYPE_BASIC == type) {
++    SharedMemoryBasic::Handle handle;
++    if (!ShmemCreated::ReadHandle(&aDescriptor, &iter, &handle))
++      return 0;
++
++    if (!SharedMemoryBasic::IsHandleValid(handle))
++      NS_RUNTIMEABORT("trying to open invalid handle");
++    segment = CreateSegment(segmentSize, handle);
++  }
++#ifdef MOZ_HAVE_SHAREDMEMORYSYSV
++  else if (SharedMemory::TYPE_SYSV == type) {
++    SharedMemorySysV::Handle handle;
++    if (!ShmemCreated::ReadHandle(&aDescriptor, &iter, &handle))
++      return 0;
++
++    if (!SharedMemorySysV::IsHandleValid(handle))
++      NS_RUNTIMEABORT("trying to open invalid handle");
++    segment = CreateSegment(segmentSize, handle);
++  }
++#endif
++  else {
++    NS_RUNTIMEABORT("unknown shmem type");
++  }
++
+   if (!segment)
+     return 0;
+ 
+   if (aProtect)
+     Protect(segment);
+ 
+   return segment;
+ }
+ 
++// static
+ void
+ Shmem::Dealloc(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead,
+                SharedMemory* aSegment)
+ {
+   if (!aSegment)
+     return;
+ 
+   size_t pageSize = SharedMemory::SystemPageSize();
+@@ -272,88 +453,149 @@ Shmem::Dealloc(IHadBetterBeIPDLCodeCalli
+   header->mSize = 0;
+ 
+   DestroySegment(aSegment);
+ }
+ 
+ 
+ #else  // !defined(DEBUG)
+ 
++// static
+ Shmem::SharedMemory*
+ Shmem::Alloc(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead,
+              size_t aNBytes, 
++             SharedMemoryType aType,
+              bool /*unused*/)
+ {
+-  SharedMemory* segment =
+-    CreateSegment(PageAlignedSize(aNBytes + sizeof(size_t)));
++  SharedMemory *segment = nsnull;
++
++  if (aType == SharedMemory::TYPE_BASIC)
++    segment = CreateSegment(PageAlignedSize(aNBytes + sizeof(size_t)),
++                            SharedMemoryBasic::NULLHandle());
++#ifdef MOZ_HAVE_SHAREDMEMORYSYSV
++  else if (aType == SharedMemory::TYPE_SYSV)
++    segment = CreateSegment(PageAlignedSize(aNBytes + sizeof(size_t)),
++                            SharedMemorySysV::NULLHandle());
++#endif
++  else
++    // Unhandled!!
++    NS_ABORT();
++
+   if (!segment)
+     return 0;
+ 
+   *PtrToSize(segment) = aNBytes;
+ 
+   return segment;
+ }
+ 
++// static
+ Shmem::SharedMemory*
+ Shmem::OpenExisting(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead,
+-                    SharedMemoryHandle aHandle,
+-                    size_t aNBytes,
+-                    bool /* unused */)
++                    const IPC::Message& aDescriptor,
++                    id_t* aId,
++                    bool /*unused*/)
+ {
+-  SharedMemory* segment =
+-    CreateSegment(PageAlignedSize(aNBytes + sizeof(size_t)), aHandle);
++  if (SHMEM_CREATED_MESSAGE_TYPE != aDescriptor.type())
++    NS_RUNTIMEABORT("expected 'shmem created' message");
++
++  SharedMemory::SharedMemoryType type;
++  void* iter = 0;
++  size_t size;
++  if (!ShmemCreated::ReadInfo(&aDescriptor, &iter, aId, &size, &type))
++    return 0;
++
++  SharedMemory* segment;
++  size_t pageSize = SharedMemory::SystemPageSize();
++  size_t segmentSize = PageAlignedSize(size);
++
++  if (SharedMemory::TYPE_BASIC == type) {
++    SharedMemoryBasic::Handle handle;
++    if (!ShmemCreated::ReadHandle(&aDescriptor, &iter, &handle))
++      return 0;
++
++    if (!SharedMemoryBasic::IsHandleValid(handle))
++      NS_RUNTIMEABORT("trying to open invalid handle");
++
++    segment = CreateSegment(segmentSize, handle);
++  }
++#ifdef MOZ_HAVE_SHAREDMEMORYSYSV
++  else if (SharedMemory::TYPE_SYSV == type) {
++    SharedMemorySysV::Handle handle;
++    if (!ShmemCreated::ReadHandle(&aDescriptor, &iter, &handle))
++      return 0;
++
++    if (!SharedMemorySysV::IsHandleValid(handle))
++      NS_RUNTIMEABORT("trying to open invalid handle");
++    segment = CreateSegment(segmentSize, handle);
++  }
++#endif
++  else {
++    NS_RUNTIMEABORT("unknown shmem type");
++  }
++
+   if (!segment)
+     return 0;
+ 
+   // this is the only validity check done OPT builds
+-  if (aNBytes != *PtrToSize(segment))
++  if (size != *PtrToSize(segment))
+     NS_RUNTIMEABORT("Alloc() segment size disagrees with OpenExisting()'s");
+ 
+   return segment;
+ }
+ 
++// static
+ void
+ Shmem::Dealloc(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead,
+                SharedMemory* aSegment)
+ {
+   DestroySegment(aSegment);
+ }
+ 
+-
+ #endif  // if defined(DEBUG)
+ 
++int
++Shmem::GetSysVID() const
++{
++#ifdef MOZ_HAVE_SHAREDMEMORYSYSV
++  if (!mSegment)
++    return -1;
+ 
+-Shmem::SharedMemory*
+-Shmem::CreateSegment(size_t aNBytes, SharedMemoryHandle aHandle)
+-{
+-  nsAutoPtr<SharedMemory> segment;
++  if (mSegment->Type() != SharedMemory::TYPE_SYSV)
++    NS_RUNTIMEABORT("Can't call GetSysVID() on a non-SysV Shmem!");
+ 
+-  if (SharedMemory::IsHandleValid(aHandle)) {
+-    segment = new SharedMemory(aHandle);
+-  }
+-  else {
+-    segment = new SharedMemory();
+-    if (!segment->Create("", false, false, aNBytes))
+-      return 0;
+-  }
+-  if (!segment->Map(aNBytes))
+-    return 0;
+-  return segment.forget();
++  SharedMemorySysV* seg = static_cast<SharedMemorySysV*>(mSegment);
++  return seg->GetHandle();
++#else
++  NS_RUNTIMEABORT("Can't call GetSysVID() with no support for SysV shared memory!");
++#endif
+ }
+ 
+-void
+-Shmem::DestroySegment(SharedMemory* aSegment)
++IPC::Message*
++Shmem::ShareTo(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead,
++               base::ProcessHandle aProcess,
++               int32 routingId)
+ {
+-  // the SharedMemory dtor closes and unmaps the actual OS shmem segment
+-  delete aSegment;
++  AssertInvariants();
++
++  if (SharedMemory::TYPE_BASIC == mSegment->Type()) {
++    SharedMemoryBasic* seg = static_cast<SharedMemoryBasic*>(mSegment);
++    SharedMemoryBasic::Handle handle;
++    if (!seg->ShareToProcess(aProcess, &handle))
++      return 0;
++
++    return new ShmemCreated(routingId, mId, mSize, handle);
++  }
++#ifdef MOZ_HAVE_SHAREDMEMORYSYSV
++  else if (SharedMemory::TYPE_SYSV == mSegment->Type()) {
++    SharedMemorySysV* seg = static_cast<SharedMemorySysV*>(mSegment);
++    return new ShmemCreated(routingId, mId, mSize, seg->GetHandle());
++  }
++#endif
++  else {
++    NS_RUNTIMEABORT("unknown shmem type (here?!)");
++  }
++
++  return 0;
+ }
+ 
+-size_t
+-Shmem::PageAlignedSize(size_t aSize)
+-{
+-  size_t pageSize = SharedMemory::SystemPageSize();
+-  size_t nPagesNeeded = int(ceil(double(aSize) / double(pageSize)));
+-  return pageSize * nPagesNeeded;
+-}
+-
+-
+ } // namespace ipc
+ } // namespace mozilla
+diff --git a/ipc/glue/Shmem.h b/ipc/glue/Shmem.h
+--- a/ipc/glue/Shmem.h
++++ b/ipc/glue/Shmem.h
+@@ -37,16 +37,17 @@
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ #ifndef mozilla_ipc_Shmem_h
+ #define mozilla_ipc_Shmem_h
+ 
+ #include "base/basictypes.h"
++#include "base/process.h"
+ 
+ #include "nscore.h"
+ #include "nsDebug.h"
+ 
+ #include "IPC/IPCMessageUtils.h"
+ #include "mozilla/ipc/SharedMemory.h"
+ 
+ /**
+@@ -60,18 +61,18 @@
+  *  SharedMemory to the set of shmem segments being managed by IPDL.
+  *
+  *  (3) IPDL-generated code "shares" the new SharedMemory to the child
+  *  process, and then sends a special asynchronous IPC message to the
+  *  child notifying it of the creation of the segment.  (What this
+  *  means is OS specific.)
+  *
+  *  (4a) The child receives the special IPC message, and using the
+- *  |mozilla::ipc::SharedMemoryHandle| (which is an fd or HANDLE) it
+- *  was passed, creates a |mozilla::ipc::SharedMemory| in the child
++ *  |SharedMemory{SysV,Basic}::Handle| it was passed, creates a
++ *  |mozilla::ipc::SharedMemory| in the child
+  *  process.
+  *
+  *  (4b) After sending the "shmem-created" IPC message, IPDL-generated
+  *  code in the parent returns a |mozilla::ipc::Shmem| back to the C++
+  *  caller of |parentActor->AllocShmem()|.  The |Shmem| is a "weak
+  *  reference" to the underlying |SharedMemory|, which is managed by
+  *  IPDL-generated code.  C++ consumers of |Shmem| can't get at the
+  *  underlying |SharedMemory|.
+@@ -81,26 +82,25 @@
+  * message.  The parent's |Shmem| then "dies", i.e. becomes
+  * inaccessible.  This process could be compared to passing a
+  * "shmem-access baton" between parent and child.
+  */
+ 
+ namespace mozilla {
+ namespace ipc {
+ 
+-
+ class NS_FINAL_CLASS Shmem
+ {
+   friend struct IPC::ParamTraits<mozilla::ipc::Shmem>;
+ 
+ public:
+   typedef int32 id_t;
+   // Low-level wrapper around platform shmem primitives.
+   typedef mozilla::ipc::SharedMemory SharedMemory;
+-  typedef SharedMemory::SharedMemoryHandle SharedMemoryHandle;
++  typedef SharedMemory::SharedMemoryType SharedMemoryType;
+   struct IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead {};
+ 
+   Shmem() :
+     mSegment(0),
+     mData(0),
+     mSize(0),
+     mId(0)
+   {
+@@ -181,46 +181,62 @@ public:
+   Size() const
+   {
+     AssertInvariants();
+     AssertAligned<T>();
+ 
+     return mSize / sizeof(T);
+   }
+ 
++  int GetSysVID() const;
++
+   // These shouldn't be used directly, use the IPDL interface instead.
+   id_t Id(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead) {
+     return mId;
+   }
+ 
++#ifndef DEBUG
+   void RevokeRights(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead)
+   {
+-    Protect(mSegment);
+   }
++#else
++  void RevokeRights(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead);
++#endif
+ 
+   void forget(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead)
+   {
+     mSegment = 0;
+     mData = 0;
+     mSize = 0;
+     mId = 0;
+   }
+ 
+   static SharedMemory*
+   Alloc(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead,
+         size_t aNBytes,
++        SharedMemoryType aType,
+         bool aProtect=false);
+ 
++  // Prepare this to be shared with |aProcess|.  Return an IPC message
++  // that contains enough information for the other process to map
++  // this segment in OpenExisting() below.  Return a new message if
++  // successful (owned by the caller), NULL if not.
++  IPC::Message*
++  ShareTo(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead,
++          base::ProcessHandle aProcess,
++          int32 routingId);
++
+   // Return a SharedMemory instance in this process using the
+-  // SharedMemoryHandle (fd/HANDLE) shared to us by the process that
+-  // created the underlying OS shmem resource
++  // descriptor shared to us by the process that created the
++  // underlying OS shmem resource.  The contents of the descriptor
++  // depend on the type of SharedMemory that was passed to us.
+   static SharedMemory*
+   OpenExisting(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead,
+-               SharedMemoryHandle aHandle,
+-               size_t aNBytes,
++               const IPC::Message& aDescriptor,
++               id_t* aId,
+                bool aProtect=false);
+ 
+   static void
+   Dealloc(IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead,
+           SharedMemory* aSegment);
+ 
+ private:
+   template<typename T>
+@@ -228,46 +244,29 @@ private:
+   {
+     if (0 != (mSize % sizeof(T)))
+       NS_RUNTIMEABORT("shmem is not T-aligned");
+   }
+ 
+ #if !defined(DEBUG)
+   void AssertInvariants() const
+   { }
+-  static void Unprotect(SharedMemory* aSegment)
+-  { }
+-  static void Protect(SharedMemory* aSegment)
+-  { }
+ 
+   static size_t*
+   PtrToSize(SharedMemory* aSegment)
+   {
+     char* endOfSegment =
+       reinterpret_cast<char*>(aSegment->memory()) + aSegment->Size();
+     return reinterpret_cast<size_t*>(endOfSegment - sizeof(size_t));
+   }
+ 
+ #else
+   void AssertInvariants() const;
+-
+-  static void Unprotect(SharedMemory* aSegment);
+-  static void Protect(SharedMemory* aSegment);
+ #endif
+ 
+-  static SharedMemory*
+-  CreateSegment(size_t aNBytes,
+-                SharedMemoryHandle aHandle=SharedMemory::NULLHandle());
+-
+-  static void
+-  DestroySegment(SharedMemory* aSegment);
+-
+-  static size_t
+-  PageAlignedSize(size_t aSize);
+-
+   SharedMemory* mSegment;
+   void* mData;
+   size_t mSize;
+   id_t mId;
+ 
+   // disable these
+   static void* operator new(size_t) CPP_THROW_NEW;
+   static void operator delete(void*);  
+@@ -280,24 +279,25 @@ private:
+ 
+ namespace IPC {
+ 
+ template<>
+ struct ParamTraits<mozilla::ipc::Shmem>
+ {
+   typedef mozilla::ipc::Shmem paramType;
+ 
++  // NB: Read()/Write() look creepy in that Shmems have a pointer
++  // member, but IPDL internally uses mId to properly initialize a
++  // "real" Shmem
++
+   static void Write(Message* aMsg, const paramType& aParam)
+   {
+     WriteParam(aMsg, aParam.mId);
+   }
+ 
+-  // NB: Read()/Write() look creepy, but IPDL internally uses mId to
+-  // properly initialize a "real" Shmem
+-
+   static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
+   {
+     paramType::id_t id;
+     if (!ReadParam(aMsg, aIter, &id))
+       return false;
+     aResult->mId = id;
+     return true;
+   }
+diff --git a/ipc/ipdl/ipdl/lower.py b/ipc/ipdl/ipdl/lower.py
+--- a/ipc/ipdl/ipdl/lower.py
++++ b/ipc/ipdl/ipdl/lower.py
+@@ -206,54 +206,56 @@ def _shmemType(ptr=0):
+     return Type('Shmem', ptr=ptr)
+ 
+ def _rawShmemType(ptr=0):
+     return Type('Shmem::SharedMemory', ptr=ptr)
+ 
+ def _shmemIdType(ptr=0):
+     return Type('Shmem::id_t', ptr=ptr)
+ 
+-def _shmemHandleType():
+-    return Type('Shmem::SharedMemoryHandle')
++def _shmemTypeType():
++    return Type('Shmem::SharedMemory::SharedMemoryType')
+ 
+ def _shmemBackstagePass():
+     return ExprCall(ExprVar(
+         'Shmem::IHadBetterBeIPDLCodeCallingThis_OtherwiseIAmADoodyhead'))
+ 
+ def _shmemCtor(rawmem, idexpr):
+     return ExprCall(ExprVar('Shmem'),
+                     args=[ _shmemBackstagePass(), rawmem, idexpr ])
+ 
+ def _shmemId(shmemexpr):
+     return ExprCall(ExprSelect(shmemexpr, '.', 'Id'),
+                     args=[ _shmemBackstagePass() ])
+ 
+-def _shmemAlloc(size):
++def _shmemAlloc(size, type):
+     # starts out UNprotected
+     return ExprCall(ExprVar('Shmem::Alloc'),
+-                    args=[ _shmemBackstagePass(), size ])
+-
+-def _shmemOpenExisting(size, handle):
++                    args=[ _shmemBackstagePass(), size, type ])
++
++def _shmemShareTo(shmemvar, processvar, route):
++    return ExprCall(ExprSelect(shmemvar, '.', 'ShareTo'),
++                    args=[ _shmemBackstagePass(),
++                           processvar, route ])
++
++def _shmemOpenExisting(descriptor, outid):
+     # starts out protected
+     return ExprCall(ExprVar('Shmem::OpenExisting'),
+                     args=[ _shmemBackstagePass(),
+                            # true => protect
+-                           handle, size, ExprLiteral.TRUE ])
++                           descriptor, outid, ExprLiteral.TRUE ])
+ 
+ def _shmemForget(shmemexpr):
+     return ExprCall(ExprSelect(shmemexpr, '.', 'forget'),
+                     args=[ _shmemBackstagePass() ])
+ 
+ def _shmemRevokeRights(shmemexpr):
+     return ExprCall(ExprSelect(shmemexpr, '.', 'RevokeRights'),
+                     args=[ _shmemBackstagePass() ])
+ 
+-def _shmemCreatedMsgVar():
+-    return ExprVar('mozilla::ipc::__internal__ipdl__ShmemCreated')
+-
+ def _lookupShmem(idexpr):
+     return ExprCall(ExprVar('LookupSharedMemory'), args=[ idexpr ])
+ 
+ def _makeForwardDecl(ptype, side):
+     clsname = _actorName(ptype.qname.baseid, side)
+ 
+     fd = ForwardDecl(clsname, cls=1)
+     if 0 == len(ptype.qname.quals):
+@@ -322,16 +324,19 @@ def _abortIfFalse(cond, msg):
+ 
+ def _runtimeAbort(msg):
+     return StmtExpr(ExprCall(ExprVar('NS_RUNTIMEABORT'),
+                                      [ ExprLiteral.String(msg) ]))
+ 
+ def _autoptr(T):
+     return Type('nsAutoPtr', T=T)
+ 
++def _autoptrGet(expr):
++    return ExprCall(ExprSelect(expr, '.', 'get'))
++
+ def _autoptrForget(expr):
+     return ExprCall(ExprSelect(expr, '.', 'forget'))
+ 
+ def _cxxArrayType(basetype, const=0, ref=0):
+     return Type('nsTArray', T=basetype, const=const, ref=ref)
+ 
+ def _callCxxArrayLength(arr):
+     return ExprCall(ExprSelect(arr, '.', 'Length'))
+@@ -2417,17 +2422,18 @@ class _GenerateProtocolActorCode(ipdl.as
+         self.cppfile = cxxFile
+         tu.accept(self)
+ 
+     def standardTypedefs(self):
+         return [
+             Typedef(Type('IPC::Message'), 'Message'),
+             Typedef(Type(self.protocol.channelName()), 'Channel'),
+             Typedef(Type(self.protocol.fqListenerName()), 'ChannelListener'),
+-            Typedef(Type('base::ProcessHandle'), 'ProcessHandle')
++            Typedef(Type('base::ProcessHandle'), 'ProcessHandle'),
++            Typedef(Type('mozilla::ipc::SharedMemory'), 'SharedMemory')
+         ]
+ 
+ 
+     def visitTranslationUnit(self, tu):
+         self.protocol = tu.protocol
+ 
+         hf = self.hdrfile
+         cf = self.cppfile
+@@ -3135,16 +3141,17 @@ class _GenerateProtocolActorCode(ipdl.as
+                     p.managedVarType(managed, self.side),
+                     p.managedVar(managed, self.side).name)) ])
+ 
+     def implementManagerIface(self):
+         p = self.protocol
+         routedvar = ExprVar('aRouted')
+         idvar = ExprVar('aId')
+         sizevar = ExprVar('aSize')
++        typevar = ExprVar('type')
+         listenertype = Type('ChannelListener', ptr=1)
+ 
+         register = MethodDefn(MethodDecl(
+             p.registerMethod().name,
+             params=[ Decl(listenertype, routedvar.name) ],
+             ret=_actorIdType(), virtual=1))
+         registerid = MethodDefn(MethodDecl(
+             p.registerIDMethod().name,
+@@ -3160,32 +3167,34 @@ class _GenerateProtocolActorCode(ipdl.as
+             p.unregisterMethod().name,
+             params=[ Decl(_actorIdType(), idvar.name) ],
+             virtual=1))
+ 
+         createshmem = MethodDefn(MethodDecl(
+             p.createSharedMemory().name,
+             ret=_rawShmemType(ptr=1),
+             params=[ Decl(Type.SIZE, sizevar.name),
++                     Decl(_shmemTypeType(), typevar.name),
+                      Decl(_shmemIdType(ptr=1), idvar.name) ],
+             virtual=1))
+         lookupshmem = MethodDefn(MethodDecl(
+             p.lookupSharedMemory().name,
+             ret=_rawShmemType(ptr=1),
+             params=[ Decl(_shmemIdType(), idvar.name) ],
+             virtual=1))
+         
+         otherprocess = MethodDefn(MethodDecl(
+             p.otherProcessMethod().name,
+             ret=Type('ProcessHandle'),
+             const=1,
+             virtual=1))
+ 
+         if p.decl.type.isToplevel():
+             tmpvar = ExprVar('tmp')
++            
+             register.addstmts([
+                 StmtDecl(Decl(_actorIdType(), tmpvar.name),
+                          p.nextActorIdExpr(self.side)),
+                 StmtExpr(ExprCall(
+                     ExprSelect(p.actorMapVar(), '.', 'AddWithID'),
+                     [ routedvar, tmpvar ])),
+                 StmtReturn(tmpvar)
+             ])
+@@ -3197,72 +3206,68 @@ class _GenerateProtocolActorCode(ipdl.as
+             ])
+             lookup.addstmt(StmtReturn(
+                 ExprCall(ExprSelect(p.actorMapVar(), '.', 'Lookup'),
+                          [ idvar ])))
+             unregister.addstmt(StmtReturn(
+                 ExprCall(ExprSelect(p.actorMapVar(), '.', 'Remove'),
+                          [ idvar ])))
+ 
+-            # SharedMemory* CreateSharedMemory(size, id_t*):
+-            #   nsAutoPtr<shmem_t> shmem(Shmem::Alloc(size));
++            # SharedMemory* CreateSharedMemory(size, type, id_t*):
++            #   nsAutoPtr<SharedMemory> seg(Shmem::Alloc(size, type));
+             #   if (!shmem)
+             #     return false
+-            #   shmemhandle_t handle;
+-            #   if (!shmem->ShareToProcess(subprocess, &handle))
++            #   Shmem s(seg, [nextshmemid]);
++            #   Message descriptor;
++            #   if (!s->ShareTo(subprocess, mId, descriptor))
+             #     return false;
+-            #   Shmem::id_t id = [nextshmemid];
+-            #   mShmemMap.Add(rawshmem, id);
+-            #   Message* msg = new __internal__ipdl__ShmemCreated(
+-            #      mRoutingId, handle, id, size);
+-            #   if (!Send(msg))
++            #   if (!Send(descriptor))
+             #     return false;
++            #   mShmemMap.Add(seg, id);
+             #   return shmem.forget();
+-            rawvar = ExprVar('rawshmem')
+-            handlevar = ExprVar('handle')
++            rawvar = ExprVar('segment')
+ 
+             createshmem.addstmt(StmtDecl(
+                 Decl(_autoptr(_rawShmemType()), rawvar.name),
+-                initargs=[ _shmemAlloc(sizevar) ]))
++                initargs=[ _shmemAlloc(sizevar, typevar) ]))
+             failif = StmtIf(ExprNot(rawvar))
+             failif.addifstmt(StmtReturn(ExprLiteral.FALSE))
+             createshmem.addstmt(failif)
+ 
+-            createshmem.addstmt(StmtDecl(
+-                Decl(_shmemHandleType(), handlevar.name)))
+-            failif = StmtIf(ExprNot(ExprCall(
+-                ExprSelect(rawvar, '->', 'ShareToProcess'),
+-                args=[ ExprCall(p.otherProcessMethod()),
+-                       ExprAddrOf(handlevar) ])))
+-            failif.addifstmt(StmtReturn(ExprLiteral.FALSE))
+-            createshmem.addstmt(failif)
+-
+-            createshmem.addstmts([
+-                StmtExpr(ExprAssn(
+-                    ExprDeref(idvar),
+-                    p.nextShmemIdExpr(self.side))),
+-                StmtDecl(ExprCall(
+-                    ExprSelect(p.shmemMapVar(), '.', 'AddWithID'),
+-                    args=[ rawvar, ExprDeref(idvar) ]))
+-            ])
+-
+-            msgvar = ExprVar('msg')
++            shmemvar = ExprVar('shmem')
++            descriptorvar = ExprVar('descriptor')
+             createshmem.addstmts([
+                 StmtDecl(
+-                    Decl(Type('Message', ptr=1), msgvar.name),
+-                    ExprNew(Type(_shmemCreatedMsgVar().name),
+-                            args=[ p.routingId(), handlevar,
+-                                   ExprDeref(idvar), sizevar ])),
+-                # TODO handle failed sends
++                    Decl(_shmemType(), shmemvar.name),
++                    initargs=[ _shmemBackstagePass(),
++                               _autoptrGet(rawvar),
++                               p.nextShmemIdExpr(self.side) ]),
++                StmtDecl(Decl(Type('Message', ptr=1), descriptorvar.name),
++                         init=_shmemShareTo(shmemvar,
++                                            ExprCall(p.otherProcessMethod()),
++                                            p.routingId()))
++            ])
++            failif = StmtIf(ExprNot(descriptorvar))
++            failif.addifstmt(StmtReturn(ExprLiteral.FALSE))
++            createshmem.addstmt(failif)
++
++            failif = StmtIf(ExprNot(ExprCall(
++                ExprSelect(p.channelVar(), p.channelSel(), 'Send'),
++                args=[ descriptorvar ])))
++            createshmem.addstmt(failif)
++
++            createshmem.addstmts([
++                StmtExpr(ExprAssn(ExprDeref(idvar), _shmemId(shmemvar))),
+                 StmtExpr(ExprCall(
+-                    ExprSelect(p.channelVar(), p.channelSel(), 'Send'),
+-                    args=[ msgvar ])),
++                    ExprSelect(p.shmemMapVar(), '.', 'AddWithID'),
++                    args=[ rawvar, ExprDeref(idvar) ])),
+                 StmtReturn(_autoptrForget(rawvar))
+             ])
+ 
++            # SharedMemory* Lookup(id)
+             lookupshmem.addstmt(StmtReturn(ExprCall(
+                 ExprSelect(p.shmemMapVar(), '.', 'Lookup'),
+                 args=[ idvar ])))
+ 
+             # "private" message that passes shmem mappings from one process
+             # to the other
+             if p.usesShmem():
+                 self.asyncSwitch.addcase(
+@@ -3281,17 +3286,17 @@ class _GenerateProtocolActorCode(ipdl.as
+             lookup.addstmt(StmtReturn(ExprCall(
+                 ExprSelect(p.managerVar(), '->', p.lookupIDMethod().name),
+                 [ idvar ])))
+             unregister.addstmt(StmtReturn(ExprCall(
+                 ExprSelect(p.managerVar(), '->', p.unregisterMethod().name),
+                 [ idvar ])))
+             createshmem.addstmt(StmtReturn(ExprCall(
+                 ExprSelect(p.managerVar(), '->', p.createSharedMemory().name),
+-                [ sizevar, idvar ])))
++                [ sizevar, typevar, idvar ])))
+             lookupshmem.addstmt(StmtReturn(ExprCall(
+                 ExprSelect(p.managerVar(), '->', p.lookupSharedMemory().name),
+                 [ idvar ])))
+             otherprocess.addstmt(StmtReturn(ExprCall(
+                 ExprSelect(p.managerVar(), '->',
+                            p.otherProcessMethod().name))))
+ 
+         # all protocols share the "same" RemoveManagee() implementation
+@@ -3342,40 +3347,43 @@ class _GenerateProtocolActorCode(ipdl.as
+                  lookupshmem,
+                  otherprocess,
+                  Whitespace.NL ]
+ 
+     def makeShmemIface(self):
+         p = self.protocol
+         idvar = ExprVar('aId')
+         sizevar = ExprVar('aSize')
++        typevar = ExprVar('aType')
+         memvar = ExprVar('aMem')
+         rawvar = ExprVar('rawmem')
+ 
+         # bool AllocShmem(size_t size, Shmem* outmem):
+         #   id_t id;
+         #   nsAutoPtr<SharedMemory> mem(CreateSharedMemory(&id));
+         #   if (!mem)
+         #     return false;
+         #   *outmem = Shmem(shmem, id)
+         #   return true;
+         allocShmem = MethodDefn(MethodDecl(
+             'AllocShmem',
+             params=[ Decl(Type.SIZE, sizevar.name),
++                     Decl(_shmemTypeType(), typevar.name),
+                      Decl(_shmemType(ptr=1), memvar.name) ],
+             ret=Type.BOOL))
+ 
+         ifallocfails = StmtIf(ExprNot(rawvar))
+         ifallocfails.addifstmt(StmtReturn(ExprLiteral.FALSE))
+ 
+         allocShmem.addstmts([
+             StmtDecl(Decl(_shmemIdType(), idvar.name)),
+             StmtDecl(Decl(_autoptr(_rawShmemType()), rawvar.name),
+                      initargs=[ ExprCall(p.createSharedMemory(),
+                                          args=[ sizevar,
++                                                typevar,
+                                                 ExprAddrOf(idvar) ]) ]),
+             ifallocfails,
+             Whitespace.NL,
+             StmtExpr(ExprAssn(
+                 ExprDeref(memvar), _shmemCtor(_autoptrForget(rawvar), idvar))),
+             StmtReturn(ExprLiteral.TRUE)
+         ])
+                 
+@@ -3384,43 +3392,28 @@ class _GenerateProtocolActorCode(ipdl.as
+                  Whitespace.NL ]
+ 
+     def genShmemCreatedHandler(self):
+         p = self.protocol
+         assert p.decl.type.isToplevel()
+         
+         case = StmtBlock()                                          
+ 
+-        handlevar = ExprVar('handle')
++        rawvar = ExprVar('rawmem')
+         idvar = ExprVar('id')
+-        sizevar = ExprVar('size')
+-        rawvar = ExprVar('rawmem')
+-        failif = StmtIf(ExprNot(ExprCall(
+-            ExprVar(_shmemCreatedMsgVar().name +'::Read'),
+-            args=[ ExprAddrOf(self.msgvar),
+-                   ExprAddrOf(handlevar),
+-                   ExprAddrOf(idvar),
+-                   ExprAddrOf(sizevar) ])))
++        case.addstmts([
++            StmtDecl(Decl(_shmemIdType(), idvar.name)),
++            StmtDecl(Decl(_autoptr(_rawShmemType()), rawvar.name),
++                     initargs=[ _shmemOpenExisting(self.msgvar,
++                                                   ExprAddrOf(idvar)) ])
++        ])
++        failif = StmtIf(ExprNot(rawvar))
+         failif.addifstmt(StmtReturn(_Result.PayloadError))
+ 
+         case.addstmts([
+-            StmtDecl(Decl(_shmemHandleType(), handlevar.name)),
+-            StmtDecl(Decl(_shmemIdType(), idvar.name)),
+-            StmtDecl(Decl(Type.SIZE, sizevar.name)),
+-            Whitespace.NL,
+-            failif,
+-            Whitespace.NL,
+-            StmtDecl(Decl(_autoptr(_rawShmemType()), rawvar.name),
+-                     initargs=[ _shmemOpenExisting(sizevar, handlevar) ])
+-        ])
+-
+-        failif = StmtIf(ExprNot(rawvar))
+-        failif.addifstmt(StmtReturn(_Result.ValuError))
+-
+-        case.addstmts([
+             failif,
+             StmtExpr(ExprCall(
+                 ExprSelect(p.shmemMapVar(), '.', 'AddWithID'),
+                 args=[ _autoptrForget(rawvar), idvar ])),
+             Whitespace.NL,
+             StmtReturn(_Result.Processed)
+         ])
+ 
+diff --git a/ipc/ipdl/test/cxx/TestShmem.cpp b/ipc/ipdl/test/cxx/TestShmem.cpp
+--- a/ipc/ipdl/test/cxx/TestShmem.cpp
++++ b/ipc/ipdl/test/cxx/TestShmem.cpp
+@@ -9,17 +9,17 @@ namespace _ipdltest {
+ //-----------------------------------------------------------------------------
+ // Parent
+ 
+ void
+ TestShmemParent::Main()
+ {
+     Shmem mem;
+     size_t size = 12345;
+-    if (!AllocShmem(size, &mem))
++    if (!AllocShmem(size, SharedMemory::TYPE_BASIC, &mem))
+         fail("can't alloc shmem");
+ 
+     if (mem.Size<char>() != size)
+         fail("shmem is wrong size: expected %lu, got %lu",
+              size, mem.Size<char>());
+ 
+     char* ptr = mem.get<char>();
+     memcpy(ptr, "Hello!", sizeof("Hello!"));
