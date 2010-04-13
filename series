@@ -1,12 +1,15 @@
-attachment.cgi?id=436590
-attachment.cgi?id=436591
+SysVXshm
+fix_for_x11_offscreen
 
 # GFX
 bug_552142_fast_scale_branch_pixman
 bug_545632_16bpp
 bug_545632_16bpp_qt
 bug_xxxxxx_gfx_image_16bpp_enabler
-QtBustageInGfx
 
-# Places
-#bug_516728_is_visited
+QtBustageInGfx
+remove_xlib_render_mode
+32bpp_target_surface
+#geo_part_2
+#geo_part_1
+#offline+online

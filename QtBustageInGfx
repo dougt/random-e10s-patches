@@ -1,7 +1,7 @@
 diff --git a/gfx/thebes/src/Makefile.in b/gfx/thebes/src/Makefile.in
 --- a/gfx/thebes/src/Makefile.in
 +++ b/gfx/thebes/src/Makefile.in
-@@ -103,17 +103,17 @@ ifeq ($(MOZ_WIDGET_TOOLKIT),gtk2)
+@@ -104,17 +104,17 @@ ifeq ($(MOZ_WIDGET_TOOLKIT),gtk2)
  
  ifdef MOZ_PANGO
  CPPSRCS += gfxPangoFonts.cpp
@@ -20,18 +20,16 @@ diff --git a/gfx/thebes/src/Makefile.in b/gfx/thebes/src/Makefile.in
  CPPSRCS +=	gfxFT2FontBase.cpp
  CPPSRCS +=	gfxFT2Utils.cpp
  CPPSRCS +=	nsUnicodeRange.cpp
-@@ -129,17 +129,17 @@ endif
- EXTRA_DSO_LDOPTS += $(MOZ_PANGO_LIBS) $(ZLIB_LIBS) $(XLDFLAGS) $(XLIBS) $(XEXT_LIBS)
- endif
+@@ -132,16 +132,17 @@ endif
  
  ifdef MOZ_DFB
  CPPSRCS += gfxDirectFBSurface.cpp
  endif
  
  ifeq ($(MOZ_WIDGET_TOOLKIT),qt)
--CPPSRCS += gfxQtPlatform.cpp gfxQPainterSurface.cpp
-+CPPSRCS += gfxQtPlatform.cpp gfxQPainterSurface.cpp gfxSharedImageSurface.cpp
+ CPPSRCS += gfxQtPlatform.cpp gfxQPainterSurface.cpp
  CPPSRCS += gfxXlibSurface.cpp gfxQtNativeRenderer.cpp
++CPPSRCS += gfxSharedImageSurface.cpp
  ifdef MOZ_PANGO
  CPPSRCS += gfxPangoFonts.cpp
  else
@@ -39,3 +37,4 @@ diff --git a/gfx/thebes/src/Makefile.in b/gfx/thebes/src/Makefile.in
  endif
  CPPSRCS +=	gfxFT2FontBase.cpp
  CPPSRCS +=	gfxFT2Utils.cpp
+ CPPSRCS +=	gfxFontconfigUtils.cpp
