@@ -1,12 +1,7 @@
 diff --git a/widget/src/qt/nsNativeThemeQt.cpp b/widget/src/qt/nsNativeThemeQt.cpp
 --- a/widget/src/qt/nsNativeThemeQt.cpp
 +++ b/widget/src/qt/nsNativeThemeQt.cpp
-@@ -100,16 +100,18 @@ static inline QRect qRectInPixels(const 
- static inline QImage::Format
- _qimage_from_gfximage_format (gfxASurface::gfxImageFormat aFormat)
- {
-     switch (aFormat) {
-     case gfxASurface::ImageFormatARGB32:
+@@ -105,6 +105,8 @@ _qimage_from_gfximage_format (gfxASurfac
          return QImage::Format_ARGB32_Premultiplied;
      case gfxASurface::ImageFormatRGB24:
          return QImage::Format_RGB32;
@@ -15,31 +10,16 @@ diff --git a/widget/src/qt/nsNativeThemeQt.cpp b/widget/src/qt/nsNativeThemeQt.c
      case gfxASurface::ImageFormatA8:
          return QImage::Format_Indexed8;
      case gfxASurface::ImageFormatA1:
- #ifdef WORDS_BIGENDIAN
-         return QImage::Format_Mono;
- #else
-         return QImage::Format_MonoLSB;
- #endif
 diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
 --- a/widget/src/qt/nsWindow.cpp
 +++ b/widget/src/qt/nsWindow.cpp
-@@ -1125,17 +1125,18 @@ nsWindow::DoPaint(QPainter* aPainter, co
-         if (gBufferPixmap->handle())
-             aPainter->drawPixmap(QPoint(rect.x, rect.y), *gBufferPixmap,
-                                  QRect(0, 0, rect.width, rect.height));
-         else {
-             QImage img(gBufferImage->Data(),
+@@ -1113,7 +1113,8 @@ nsWindow::DoPaint(QPainter* aPainter, co
                         gBufferImage->Width(),
                         gBufferImage->Height(),
                         gBufferImage->Stride(),
--                       QImage::Format_RGB32);
-+                       gBufferImage->Format() == gfxASurface::ImageFormatRGB16 ?
+-                       _depth_to_qformat(gBufferImage->Depth()));
++                       gBufferImage->Format() == gfxASurface::ImageFormatRGB16 ? 
 +                           QImage::Format_RGB16 : QImage::Format_RGB32);
              aPainter->drawImage(QPoint(rect.x, rect.y), img,
                                  QRect(0, 0, rect.width, rect.height));
          }
-     }
- 
-     ctx = nsnull;
-     targetSurface = nsnull;
- 
