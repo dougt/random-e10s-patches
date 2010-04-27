@@ -1,5 +1,6 @@
 build_bustage_in_dbus_handler
 build_bustage_in_qpainter_cario
+build_bstage_in_app_support
 
 # GFX
 bug_552142_fast_scale_branch_pixman
