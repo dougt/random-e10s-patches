@@ -1,40 +1,22 @@
-diff --git a/toolkit/xre/nsNativeAppSupportQt.cpp b/toolkit/xre/nsNativeAppSupportQt.cpp
---- a/toolkit/xre/nsNativeAppSupportQt.cpp
-+++ b/toolkit/xre/nsNativeAppSupportQt.cpp
-@@ -35,34 +35,34 @@
-  * the terms of any one of the MPL, the GPL or the LGPL.
-  *
-  * ***** END LICENSE BLOCK ***** */
+diff --git a/toolkit/xre/Makefile.in b/toolkit/xre/Makefile.in
+--- a/toolkit/xre/Makefile.in
++++ b/toolkit/xre/Makefile.in
+@@ -197,17 +197,17 @@ export::
+ endif
  
- #include <stdlib.h>
- #include "nsNativeAppSupportBase.h"
+ LOCAL_INCLUDES += \
+ 	-I$(srcdir) \
+ 	-I$(srcdir)/../profile/src \
+ 	-I$(topsrcdir)/config \
+ 	$(NULL)
  
- #ifdef MOZ_ENABLE_LIBCONIC
--#include <glib-object.h>
-+//#include <glib-object.h>
- #endif
+-CXXFLAGS += $(TK_CFLAGS) $(MOZ_DBUS_CFLAGS)
++CXXFLAGS += $(TK_CFLAGS) $(MOZ_DBUS_CFLAGS) $(MOZ_DBUS_GLIB_CFLAGS)
  
- class nsNativeAppSupportQt : public nsNativeAppSupportBase
- {
- public:
-   NS_IMETHOD Start(PRBool* aRetVal);
-   NS_IMETHOD Stop(PRBool* aResult);
- };
+ ifeq ($(MOZ_WIDGET_TOOLKIT),gtk2)
+ CXXFLAGS += $(MOZ_PANGO_CFLAGS)
+ endif
  
- NS_IMETHODIMP
- nsNativeAppSupportQt::Start(PRBool* aRetVal)
- {
-   NS_ASSERTION(gAppData, "gAppData must not be null.");
- 
-   *aRetVal = PR_TRUE;
- #ifdef MOZ_ENABLE_LIBCONIC
--  g_type_init();
-+ // WTF? g_type_init();
- #endif
- 
-   return NS_OK;
- }
- 
- NS_IMETHODIMP
- nsNativeAppSupportQt::Stop(PRBool* aResult)
- {
+ ifdef BUILD_STATIC_LIBS
+ DEFINES += -D_BUILD_STATIC_BIN
+ endif
