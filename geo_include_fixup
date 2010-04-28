@@ -1,0 +1,44 @@
+diff --git a/dom/ipc/PIFrameEmbedding.ipdl b/dom/ipc/PIFrameEmbedding.ipdl
+--- a/dom/ipc/PIFrameEmbedding.ipdl
++++ b/dom/ipc/PIFrameEmbedding.ipdl
+@@ -37,17 +37,17 @@
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ include protocol PContentProcess;
+ include protocol PDocumentRenderer;
+ include protocol PDocumentRendererShmem;
+ include protocol PObjectWrapper;
+ include protocol PContextWrapper;
+-include protocol PGeolocationRequest
++include protocol PGeolocationRequest;
+ 
+ include "mozilla/TabTypes.h";
+ include "TabMessageUtils.h";
+ include "gfxMatrix.h";
+ 
+ /* XXX- dougt. do these need full pathes */
+ include "mozilla/geolocation/GeolocationMessageUtils.h";
+ include "mozilla/chrome/RegistryMessageUtils.h";
+diff --git a/dom/src/geolocation/PGeolocationRequest.ipdl b/dom/src/geolocation/PGeolocationRequest.ipdl
+--- a/dom/src/geolocation/PGeolocationRequest.ipdl
++++ b/dom/src/geolocation/PGeolocationRequest.ipdl
+@@ -31,17 +31,17 @@
+  * use your version of this file under the terms of the MPL, indicate your
+  * decision by deleting the provisions above and replace them with the notice
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+-include protocol "PIFrameEmbedding.ipdl";
++include protocol PIFrameEmbedding;
+ 
+ include "mozilla/geolocation/GeolocationMessageUtils.h";
+ 
+ using PositionData;
+ 
+ namespace mozilla {
+ namespace dom {
+ 

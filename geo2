@@ -1,0 +1,2496 @@
+# HG changeset patch
+# User Josh Matthews <josh@joshmatthews.net>
+# Date 1269813477 -46800
+# Node ID 080f86000bd2ff1c438ffee119d2ac8e3c6cec01
+# Parent  75b8b2c4ba7314afc36446cb16955881b503beb2
+[mq]: geolocation-ipdl
+
+diff --git a/dom/base/Makefile.in b/dom/base/Makefile.in
+--- a/dom/base/Makefile.in
++++ b/dom/base/Makefile.in
+@@ -104,14 +104,20 @@ CPPSRCS =			\
+ 	$(NULL)
+ 
+ include $(topsrcdir)/dom/dom-config.mk
+ 
+ ifdef MOZ_JSDEBUGGER
+ DEFINES += -DMOZ_JSDEBUGGER
+ endif
+ 
++include $(topsrcdir)/config/config.mk
++include $(topsrcdir)/ipc/chromium/chromium-config.mk
+ include $(topsrcdir)/config/rules.mk
+ 
++LOCAL_INCLUDES += \
++		-I$(topsrcdir)/embedding/browser/webBrowser \
++		$(NULL)
++
+ ifdef MOZ_X11
+ CXXFLAGS += $(TK_CFLAGS)
+ LDFLAGS += $(TK_LIBS)
+ endif
+diff --git a/dom/base/nsGlobalWindow.cpp b/dom/base/nsGlobalWindow.cpp
+--- a/dom/base/nsGlobalWindow.cpp
++++ b/dom/base/nsGlobalWindow.cpp
+@@ -41,17 +41,20 @@
+  * decision by deleting the provisions above and replace them with the notice
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ #ifdef MOZ_IPC
++#include "mozilla/dom/PIFrameEmbeddingChild.h"
++#include "mozilla/dom/TabChild.h"
+ #include "nsGeolocationContent.h"
++#include "nsDocShellTreeOwner.h"
+ #include "nsXULAppAPI.h"
+ #endif
+ 
+ // Local Includes
+ #include "nsGlobalWindow.h"
+ #include "nsScreen.h"
+ #include "nsHistory.h"
+ #include "nsBarProps.h"
+@@ -172,17 +175,16 @@
+ #include "nsCDefaultURIFixup.h"
+ #include "nsEventDispatcher.h"
+ #include "nsIObserverService.h"
+ #include "nsIXULAppInfo.h"
+ #include "nsNetUtil.h"
+ #include "nsFocusManager.h"
+ #include "nsIJSON.h"
+ #ifdef MOZ_XUL
+-#include "nsXULPopupManager.h"
+ #include "nsIDOMXULControlElement.h"
+ #include "nsIFrame.h"
+ #endif
+ 
+ #include "plbase64.h"
+ 
+ #ifdef NS_PRINTING
+ #include "nsIPrintSettings.h"
+@@ -10430,19 +10432,32 @@ NS_IMETHODIMP nsNavigator::GetGeolocatio
+   if (!mDocShell)
+     return NS_ERROR_FAILURE;
+ 
+   nsCOMPtr<nsIDOMWindow> contentDOMWindow(do_GetInterface(mDocShell));
+   if (!contentDOMWindow)
+     return NS_ERROR_FAILURE;
+ 
+ #ifdef MOZ_IPC
+-  if (XRE_GetProcessType() == GeckoProcessType_Content)
+-    mGeolocation = new nsGeolocationContent();
+-  else
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    nsCOMPtr<nsIDocShellTreeItem> treeItem(do_QueryInterface(mDocShell));
++    NS_ENSURE_STATE(treeItem);
++    nsCOMPtr<nsIDocShellTreeOwner> treeOwner;
++    nsresult rv = treeItem->GetTreeOwner(getter_AddRefs(treeOwner));
++    NS_ENSURE_SUCCESS(rv, rv);
++    nsCOMPtr<nsICDocShellTreeOwner> realTreeOwner(do_QueryInterface(treeOwner));
++    mozilla::dom::TabChild* tabChild = NULL;
++    if (realTreeOwner)
++    {
++      nsDocShellTreeOwner *tree = static_cast<nsDocShellTreeOwner *>(treeOwner.get());
++      nsCOMPtr<nsIEmbeddingSiteWindow> siteWindow = tree->GetOwnerWin();
++      tabChild = static_cast<mozilla::dom::TabChild*>(siteWindow.get());
++    }
++    mGeolocation = new nsGeolocationContent(tabChild);
++  } else
+ #endif
+     mGeolocation = new nsGeolocationChrome();
+   
+   if (!mGeolocation)
+     return NS_ERROR_FAILURE;
+   
+   if (NS_FAILED(mGeolocation->Init(contentDOMWindow)))
+     return NS_ERROR_FAILURE;
+diff --git a/dom/base/nsGlobalWindow.h b/dom/base/nsGlobalWindow.h
+--- a/dom/base/nsGlobalWindow.h
++++ b/dom/base/nsGlobalWindow.h
+@@ -96,17 +96,17 @@
+ #include "nsIDOMStorageObsolete.h"
+ #include "nsIDOMStorageList.h"
+ #include "nsIDOMStorageWindow.h"
+ #include "nsIDOMStorageEvent.h"
+ #include "nsIDOMOfflineResourceList.h"
+ #include "nsPIDOMEventTarget.h"
+ #include "nsIArray.h"
+ #include "nsIContent.h"
+-#include "nsFrameMessageManager.h"
++#include "nsIFrameMessageManager.h"
+ 
+ #define DEFAULT_HOME_PAGE "www.mozilla.org"
+ #define PREF_BROWSER_STARTUP_HOMEPAGE "browser.startup.homepage"
+ 
+ class nsIDOMBarProp;
+ class nsIDocument;
+ class nsPresContext;
+ class nsIDOMEvent;
+diff --git a/dom/ipc/Makefile.in b/dom/ipc/Makefile.in
+--- a/dom/ipc/Makefile.in
++++ b/dom/ipc/Makefile.in
+@@ -54,16 +54,18 @@ EXPORTS_NAMESPACES = mozilla mozilla/dom
+ EXPORTS_mozilla = \
+   TabTypes.h \
+   $(NULL)
+ 
+ EXPORTS_mozilla/dom = \
+   ContentProcessChild.h \
+   ContentProcessParent.h \
+   ContentProcessThread.h \
++  TabChild.h \
++  TabParent.h \
+   $(NULL)
+ 
+ CPPSRCS = \
+   ContentProcessThread.cpp \
+   ContentProcessParent.cpp \
+   ContentProcessChild.cpp \
+   TabParent.cpp \
+   TabChild.cpp \
+@@ -73,11 +75,12 @@ CPPSRCS = \
+ include $(topsrcdir)/config/config.mk
+ include $(topsrcdir)/ipc/chromium/chromium-config.mk
+ include $(topsrcdir)/config/rules.mk
+ 
+ LOCAL_INCLUDES += \
+ 		-I$(srcdir)/../../content/base/src \
+ 		-I$(srcdir)/../../content/events/src \
+ 		-I$(topsrcdir)/chrome/src \
++		-I$(srcdir)/../base \
+ 		$(NULL)
+ 
+ DEFINES += -DBIN_SUFFIX='"$(BIN_SUFFIX)"'
+diff --git a/dom/ipc/PIFrameEmbedding.ipdl b/dom/ipc/PIFrameEmbedding.ipdl
+--- a/dom/ipc/PIFrameEmbedding.ipdl
++++ b/dom/ipc/PIFrameEmbedding.ipdl
+@@ -37,34 +37,42 @@
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ include protocol PContentProcess;
+ include protocol PDocumentRenderer;
+ include protocol PDocumentRendererShmem;
+ include protocol PObjectWrapper;
+ include protocol PContextWrapper;
++include protocol PGeolocationRequest
+ 
+ include "mozilla/TabTypes.h";
+ include "TabMessageUtils.h";
+ include "gfxMatrix.h";
+ 
++/* XXX- dougt. do these need full pathes */
++include "mozilla/geolocation/GeolocationMessageUtils.h";
++include "mozilla/chrome/RegistryMessageUtils.h";
++
+ using MagicWindowHandle;
+ using RemoteDOMEvent;
+ using gfxMatrix;
++using GeolocationOperation;
++using SerializedURI;
+ 
+ namespace mozilla {
+ namespace dom {
+ 
+ rpc protocol PIFrameEmbedding
+ {
+     manager PContentProcess;
+     manages PDocumentRenderer;
+     manages PDocumentRendererShmem;
+     manages PContextWrapper;
++    manages PGeolocationRequest;
+ 
+ child:
+     __delete__();
+ 
+ parent:
+     /**
+      * When child sends this message, parent should move focus to
+      * the next or previous focusable element.
+@@ -94,16 +102,19 @@ parent:
+     rpc createWindow() returns (PIFrameEmbedding window);
+ 
+     PContextWrapper();
+ 
+     rpc sendSyncMessageToParent(nsString aMessage, nsString aJSON, PObjectWrapper[] aObjects)
+       returns (nsString[] retval);
+ 
+     sendAsyncMessageToParent(nsString aMessage, nsString aJSON);
++
++    PGeolocationRequest(PIFrameEmbedding tab, SerializedURI uri);
++
+ child:
+     createWidget(MagicWindowHandle parentWidget);
+ 
+     loadURL(nsCString uri);
+ 
+     move(PRUint32 x,
+          PRUint32 y,
+          PRUint32 width,
+diff --git a/dom/ipc/TabChild.cpp b/dom/ipc/TabChild.cpp
+--- a/dom/ipc/TabChild.cpp
++++ b/dom/ipc/TabChild.cpp
+@@ -33,16 +33,17 @@
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ #include "TabChild.h"
+ #include "mozilla/dom/PContentProcessChild.h"
++#include "mozilla/dom/PGeolocationRequestChild.h"
+ #include "mozilla/jsipc/ContextWrapperChild.h"
+ 
+ #include "nsIWebBrowser.h"
+ #include "nsEmbedCID.h"
+ #include "nsComponentManagerUtils.h"
+ #include "nsIBaseWindow.h"
+ #include "nsIDOMWindow.h"
+ #include "nsIDocShellTreeItem.h"
+@@ -664,16 +665,31 @@ TabChild::RecvPDocumentRendererShmemCons
+ 
+     dirtyArea = aMatrix.Transform(dirtyArea);
+ 
+     return PDocumentRendererShmemChild::Send__delete__(__a, dirtyArea.X(), dirtyArea.Y(), 
+                                                        dirtyArea.Width(), dirtyArea.Height(),
+                                                        aBuf);
+ }
+ 
++PGeolocationRequestChild*
++TabChild::AllocPGeolocationRequest(PIFrameEmbeddingChild* aChild,
++                                   const SerializedURI& aURI)
++{
++    NS_NOTREACHED("GeolocationRequestChild objects must be allocated manually.");
++    return NULL;
++}
++
++bool
++TabChild::DeallocPGeolocationRequest(PGeolocationRequestChild* actor)
++{
++    delete actor;
++    return true;
++}    
++
+ bool
+ TabChild::RecvactivateFrameEvent(const nsString& aType, const bool& capture)
+ {
+   nsCOMPtr<nsPIDOMWindow> window = do_GetInterface(mWebNav);
+   NS_ENSURE_TRUE(window, true);
+   nsCOMPtr<nsIDOMEventTarget> chromeHandler =
+     do_QueryInterface(window->GetChromeEventHandler());
+   NS_ENSURE_TRUE(chromeHandler, true);
+diff --git a/dom/ipc/TabChild.h b/dom/ipc/TabChild.h
+--- a/dom/ipc/TabChild.h
++++ b/dom/ipc/TabChild.h
+@@ -231,16 +231,22 @@ public:
+             const nsString& bgcolor,
+             const PRUint32& flags,
+             const bool& flush,
+             const gfxMatrix& aMatrix,
+             const PRInt32& aBufW,
+             const PRInt32& aBufH,
+             Shmem& aBuf);
+ 
++    virtual PGeolocationRequestChild*
++    AllocPGeolocationRequest(PIFrameEmbeddingChild* child,
++                             const SerializedURI& uri);
++    virtual bool
++    DeallocPGeolocationRequest(PGeolocationRequestChild* actor);
++
+     nsIWebNavigation* WebNavigation() { return mWebNav; }
+ 
+     JSContext* GetJSContext() { return mCx; }
+ 
+     nsIPrincipal* GetPrincipal() { return mPrincipal; }
+ 
+     virtual PContextWrapperChild* AllocPContextWrapper();
+     virtual bool DeallocPContextWrapper(PContextWrapperChild* actor);
+diff --git a/dom/ipc/TabParent.cpp b/dom/ipc/TabParent.cpp
+--- a/dom/ipc/TabParent.cpp
++++ b/dom/ipc/TabParent.cpp
+@@ -36,39 +36,43 @@
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ #include "TabParent.h"
+ 
+ #include "mozilla/ipc/DocumentRendererParent.h"
+ #include "mozilla/ipc/DocumentRendererShmemParent.h"
+ #include "mozilla/dom/ContentProcessParent.h"
++#include "mozilla/geolocation/GeolocationRequestParent.h"
+ #include "mozilla/jsipc/ContextWrapperParent.h"
+ 
+ #include "nsIURI.h"
+ #include "nsFocusManager.h"
+ #include "nsCOMPtr.h"
+ #include "nsServiceManagerUtils.h"
+ #include "nsIDOMElement.h"
+ #include "nsEventDispatcher.h"
+ #include "nsIDOMEventTarget.h"
+ #include "nsIDOMEvent.h"
+ #include "nsIPrivateDOMEvent.h"
+ #include "nsIWebProgressListener2.h"
+ #include "nsFrameLoader.h"
+ #include "nsNetUtil.h"
+ #include "jsarray.h"
+ #include "nsContentUtils.h"
++#include "nsGlobalWindow.h"
+ 
+ using mozilla::ipc::DocumentRendererParent;
+ using mozilla::ipc::DocumentRendererShmemParent;
+ using mozilla::dom::ContentProcessParent;
++using mozilla::dom::GeolocationRequestParent;
+ using mozilla::jsipc::PContextWrapperParent;
+ using mozilla::jsipc::ContextWrapperParent;
+ 
++
+ // The flags passed by the webProgress notifications are 16 bits shifted
+ // from the ones registered by webProgressListeners.
+ #define NOTIFY_FLAG_SHIFT 16
+ 
+ namespace mozilla {
+ namespace dom {
+ 
+ NS_IMPL_ISUPPORTS1(TabParent, nsIWebProgress)
+@@ -429,16 +433,50 @@ TabParent::AllocPDocumentRendererShmem(c
+ 
+ bool
+ TabParent::DeallocPDocumentRendererShmem(PDocumentRendererShmemParent* actor)
+ {
+     delete actor;
+     return true;
+ }
+ 
++PGeolocationRequestParent*
++TabParent::AllocPGeolocationRequest(PIFrameEmbeddingParent* aParent,
++                                    const SerializedURI& aUri)
++{
++    return new GeolocationRequestParent();
++}
++
++bool
++TabParent::RecvPGeolocationRequestConstructor(
++        PGeolocationRequestParent* aActor,
++        PIFrameEmbeddingParent* aParent,
++        const SerializedURI& aURI)
++{
++    nsCOMPtr<nsIDOMDocument> domDoc;
++    nsresult rv = mFrameElement->GetOwnerDocument(getter_AddRefs(domDoc));
++    NS_ENSURE_SUCCESS(rv, true);
++    nsCOMPtr<nsIDocument> doc(do_QueryInterface(domDoc));
++    NS_ENSURE_TRUE(doc, true);
++    nsCOMPtr<nsPIDOMWindow> window = doc->GetWindow();
++    NS_ENSURE_TRUE(window, true);
++
++    rv = static_cast<GeolocationRequestParent*>(aActor)->
++            Init(static_cast<nsGlobalWindow*>(window.get()), aURI);
++    NS_ENSURE_SUCCESS(rv, true);
++    return true;
++}
++
++bool
++TabParent::DeallocPGeolocationRequest(PGeolocationRequestParent* actor)
++{
++    delete actor;
++    return true;
++}
++
+ PContextWrapperParent*
+ TabParent::AllocPContextWrapper()
+ {
+     ContentProcessParent* cpp =
+         static_cast<ContentProcessParent*>(Manager());
+     return new ContextWrapperParent(cpp);
+ }
+ 
+diff --git a/dom/ipc/TabParent.h b/dom/ipc/TabParent.h
+--- a/dom/ipc/TabParent.h
++++ b/dom/ipc/TabParent.h
+@@ -152,16 +152,26 @@ public:
+             const PRUint32& flags,
+             const bool& flush,
+             const gfxMatrix& aMatrix,
+             const PRInt32& bufw,
+             const PRInt32& bufh,
+             Shmem& buf);
+     virtual bool DeallocPDocumentRendererShmem(PDocumentRendererShmemParent* actor);
+ 
++    virtual PGeolocationRequestParent*
++    AllocPGeolocationRequest(PIFrameEmbeddingParent* parent,
++                             const SerializedURI& uri);
++    virtual bool
++    RecvPGeolocationRequestConstructor(PGeolocationRequestParent* actor,
++                                       PIFrameEmbeddingParent* parent,
++                                       const SerializedURI& uri);
++    virtual bool
++    DeallocPGeolocationRequest(PGeolocationRequestParent* actor);
++
+     virtual PContextWrapperParent* AllocPContextWrapper();
+     virtual bool DeallocPContextWrapper(PContextWrapperParent* actor);
+ 
+     JSBool GetGlobalJSObject(JSContext* cx, JSObject** globalp);
+ 
+     NS_DECL_ISUPPORTS
+     NS_DECL_NSIWEBPROGRESS
+ 
+diff --git a/dom/src/geolocation/DOMGeoPosition.cpp b/dom/src/geolocation/DOMGeoPosition.cpp
+new file mode 100644
+--- /dev/null
++++ b/dom/src/geolocation/DOMGeoPosition.cpp
+@@ -0,0 +1,357 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
++ * vim: sw=2 ts=8 et :
++ */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at:
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Mozilla Code.
++ *
++ * The Initial Developer of the Original Code is
++ *   The Mozilla Foundation
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Josh Matthews <josh@joshmatthews.net>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#include "GeolocationMessageUtils.h"
++#include "DOMGeoPosition.h"
++#include "nsIProgrammingLanguage.h"
++
++NS_IMPL_ISUPPORTS1_CI(DOMGeolocationClassInfo, nsIClassInfo)
++
++NS_IMETHODIMP 
++DOMGeolocationClassInfo::GetInterfaces(PRUint32 *count, nsIID * **array)
++{
++  return NS_ERROR_NOT_IMPLEMENTED;
++}
++
++NS_IMETHODIMP 
++DOMGeolocationClassInfo::GetHelperForLanguage(PRUint32 language, nsISupports **_retval)
++{
++  return NS_ERROR_NOT_IMPLEMENTED;
++}
++
++NS_IMETHODIMP 
++DOMGeolocationClassInfo::GetContractID(char * *aContractID)
++{
++  *aContractID = nsnull;
++  return NS_OK;
++}
++
++NS_IMETHODIMP 
++DOMGeolocationClassInfo::GetClassDescription(char * *aClassDescription)
++{
++  *aClassDescription = nsnull;
++  return NS_OK;
++}
++
++NS_IMETHODIMP 
++DOMGeolocationClassInfo::GetClassID(nsCID * *aClassID)
++{
++  *aClassID = nsnull;
++  return NS_OK;
++}
++
++NS_IMETHODIMP 
++DOMGeolocationClassInfo::GetImplementationLanguage(PRUint32 *aImplementationLanguage)
++{
++  *aImplementationLanguage = nsIProgrammingLanguage::CPLUSPLUS;
++  return NS_OK;
++}
++
++NS_IMETHODIMP 
++DOMGeolocationClassInfo::GetFlags(PRUint32 *aFlags)
++{
++  *aFlags = nsIClassInfo::DOM_OBJECT;
++  return NS_OK;
++}
++
++NS_IMETHODIMP 
++DOMGeolocationClassInfo::GetClassIDNoAlloc(nsCID *aClassIDNoAlloc)
++{
++  return NS_ERROR_NOT_AVAILABLE;
++}
++
++NS_IMPL_ISUPPORTS2(DOMGeoPositionCoords, nsIDOMGeoPositionCoords, DOMGeolocationClassInfo)
++
++DOMGeoPositionCoords::DOMGeoPositionCoords(const PositionData& aPosition)
++: mLatitude(aPosition.latitude)
++, mLongitude(aPosition.longitude)
++, mAltitude(aPosition.altitude)
++, mAccuracy(aPosition.accuracy)
++, mAltitudeAccuracy(aPosition.altitudeAccuracy)
++, mHeading(aPosition.heading)
++, mSpeed(aPosition.speed)
++{
++}
++
++DOMGeoPositionCoords::DOMGeoPositionCoords()
++: mLatitude(0)
++, mLongitude(0)
++, mAltitude(0)
++, mAccuracy(0)
++, mAltitudeAccuracy(0)
++, mHeading(0)
++, mSpeed(0)
++{
++}
++
++NS_IMETHODIMP
++DOMGeoPositionCoords::GetLatitude(double* aRetVal)
++{
++  *aRetVal = mLatitude;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionCoords::GetLongitude(double* aRetVal)
++{
++  *aRetVal = mLongitude;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionCoords::GetAltitude(double* aRetVal)
++{
++  *aRetVal = mAltitude;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionCoords::GetAccuracy(double* aRetVal)
++{
++  *aRetVal = mAccuracy;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionCoords::GetAltitudeAccuracy(double* aRetVal)
++{
++  *aRetVal = mAltitudeAccuracy;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionCoords::GetHeading(double* aRetVal)
++{
++  *aRetVal = mHeading;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionCoords::GetSpeed(double* aRetVal)
++{
++  *aRetVal = mSpeed;
++  return NS_OK;
++}
++
++NS_IMPL_ISUPPORTS2(DOMGeoPositionAddress, nsIDOMGeoPositionAddress, DOMGeolocationClassInfo)
++
++DOMGeoPositionAddress::DOMGeoPositionAddress(const PositionData& aPosition)
++: mStreetNumber(aPosition.streetNumber)
++, mStreet(aPosition.street)
++, mPremises(aPosition.premises)
++, mCity(aPosition.city)
++, mCounty(aPosition.county)
++, mRegion(aPosition.region)
++, mCountry(aPosition.country)
++, mCountryCode(aPosition.countryCode)
++, mPostalCode(aPosition.postalCode)
++{
++}
++
++DOMGeoPositionAddress::DOMGeoPositionAddress()
++{
++}
++
++NS_IMETHODIMP
++DOMGeoPositionAddress::GetStreetNumber(nsAString& aRetVal)
++{
++  aRetVal = mStreetNumber;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionAddress::GetStreet(nsAString& aRetVal)
++{
++  aRetVal = mStreet;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionAddress::GetPremises(nsAString& aRetVal)
++{
++  aRetVal = mPremises;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionAddress::GetCity(nsAString& aRetVal)
++{
++  aRetVal = mCity;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionAddress::GetCounty(nsAString& aRetVal)
++{
++  aRetVal = mCounty;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionAddress::GetRegion(nsAString& aRetVal)
++{
++  aRetVal = mRegion;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionAddress::GetCountry(nsAString& aRetVal)
++{
++  aRetVal = mStreetNumber;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionAddress::GetCountryCode(nsAString& aRetVal)
++{
++  aRetVal = mCountry;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionAddress::GetPostalCode(nsAString& aRetVal)
++{
++  aRetVal = mPostalCode;
++  return NS_OK;
++}
++
++NS_IMPL_ISUPPORTS2(DOMGeoPosition, nsIDOMGeoPosition, DOMGeolocationClassInfo)
++
++DOMGeoPosition::DOMGeoPosition(const PositionData& aPosition)
++: mTimeStamp(aPosition.timeStamp)
++{
++  if (aPosition.hasCoords) {
++    mCoords = new DOMGeoPositionCoords(aPosition);
++  }
++  if (aPosition.hasAddress) {
++    mAddress = new DOMGeoPositionAddress(aPosition);
++  }
++}
++
++DOMGeoPosition::DOMGeoPosition()
++: mTimeStamp(0)
++{
++}
++
++NS_IMETHODIMP
++DOMGeoPosition::GetTimestamp(DOMTimeStamp* aRetVal)
++{
++  *aRetVal = mTimeStamp;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPosition::GetCoords(nsIDOMGeoPositionCoords* *aCoords)
++{
++  NS_ENSURE_ARG_POINTER(aCoords);
++  *aCoords = nsnull;
++  
++  NS_IF_ADDREF(*aCoords = mCoords);
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPosition::GetAddress(nsIDOMGeoPositionAddress* *aAddress)
++{
++  NS_ENSURE_ARG_POINTER(aAddress);
++  *aAddress = nsnull;
++
++  NS_IF_ADDREF(*aAddress = mAddress);
++  return NS_OK;
++}
++
++NS_IMPL_ISUPPORTS2(DOMGeoPositionOptions, nsIDOMGeoPositionOptions, DOMGeolocationClassInfo)
++
++DOMGeoPositionOptions::DOMGeoPositionOptions()
++: mEnableHighAccuracy(PR_TRUE)
++, mHasTimeout(false)
++, mHasMaxAge(false)
++{
++}
++
++NS_IMETHODIMP
++DOMGeoPositionOptions::GetEnableHighAccuracy(PRBool* aRetVal)
++{
++  *aRetVal = mEnableHighAccuracy;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionOptions::SetEnableHighAccuracy(PRBool aEnable)
++{
++  mEnableHighAccuracy = aEnable;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionOptions::GetTimeout(PRInt32* aRetVal)
++{
++  if (mHasTimeout) {
++    *aRetVal = mTimeout;
++    return NS_OK;
++  }
++  return NS_ERROR_NOT_AVAILABLE;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionOptions::SetTimeout(PRInt32 aTimeout)
++{
++  mTimeout = aTimeout;
++  mHasTimeout = true;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionOptions::GetMaximumAge(PRInt32* aRetVal)
++{
++  if (mHasMaxAge) {
++    *aRetVal = mMaximumAge;
++    return NS_OK;
++  }
++  return NS_ERROR_NOT_AVAILABLE;
++}
++
++NS_IMETHODIMP
++DOMGeoPositionOptions::SetMaximumAge(PRInt32 aMaxAge)
++{
++  mMaximumAge = aMaxAge;
++  mHasMaxAge = true;
++  return NS_OK;
++}
+diff --git a/dom/src/geolocation/DOMGeoPosition.h b/dom/src/geolocation/DOMGeoPosition.h
+new file mode 100644
+--- /dev/null
++++ b/dom/src/geolocation/DOMGeoPosition.h
+@@ -0,0 +1,139 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
++ * vim: sw=2 ts=8 et :
++ */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at:
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Mozilla Code.
++ *
++ * The Initial Developer of the Original Code is
++ *   The Mozilla Foundation
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Josh Matthews <josh@joshmatthews.net>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#include "nsCOMPtr.h"
++#include "nsIDOMGeoPosition.h"
++#include "nsIDOMGeoPositionAddress.h"
++#include "nsIDOMGeoPositionCoords.h"
++#include "nsIDOMGeoPositionOptions.h"
++#include "nsIClassInfoImpl.h"
++#include "nsStringGlue.h"
++
++struct PositionData;
++
++class DOMGeolocationClassInfo : public nsIClassInfo
++{
++public:
++  NS_DECL_ISUPPORTS
++  NS_DECL_NSICLASSINFO
++};
++
++class DOMGeoPositionCoords : public nsIDOMGeoPositionCoords,
++                             public DOMGeolocationClassInfo
++{
++public:
++  NS_DECL_ISUPPORTS
++  NS_DECL_NSIDOMGEOPOSITIONCOORDS
++
++  DOMGeoPositionCoords();
++  DOMGeoPositionCoords(const PositionData& aPosition);
++
++private:
++  ~DOMGeoPositionCoords() {}
++
++  double mLatitude;
++  double mLongitude;
++  double mAltitude;
++  double mAccuracy;
++  double mAltitudeAccuracy;
++  double mHeading;
++  double mSpeed;
++};
++
++class DOMGeoPositionAddress : public nsIDOMGeoPositionAddress,
++                              public DOMGeolocationClassInfo
++{
++public:
++  NS_DECL_ISUPPORTS
++  NS_DECL_NSIDOMGEOPOSITIONADDRESS
++
++  DOMGeoPositionAddress();
++  DOMGeoPositionAddress(const PositionData& aPosition);
++
++private:
++  ~DOMGeoPositionAddress() {}
++  
++  nsString mStreetNumber;
++  nsString mStreet;
++  nsString mPremises;
++  nsString mCity;
++  nsString mCounty;
++  nsString mRegion;
++  nsString mCountry;
++  nsString mCountryCode;
++  nsString mPostalCode;
++};
++
++class DOMGeoPosition : public nsIDOMGeoPosition,
++                       public DOMGeolocationClassInfo
++{
++public:
++  NS_DECL_ISUPPORTS
++  NS_DECL_NSIDOMGEOPOSITION
++
++  DOMGeoPosition();
++  DOMGeoPosition(const PositionData& aPosition);
++
++private:
++  ~DOMGeoPosition() {}
++
++  DOMTimeStamp mTimeStamp;
++  nsCOMPtr<nsIDOMGeoPositionAddress> mAddress;
++  nsCOMPtr<nsIDOMGeoPositionCoords> mCoords;
++};
++
++class DOMGeoPositionOptions : public nsIDOMGeoPositionOptions,
++                              public DOMGeolocationClassInfo
++{
++public:
++  NS_DECL_ISUPPORTS
++  NS_DECL_NSIDOMGEOPOSITIONOPTIONS
++
++  DOMGeoPositionOptions();
++
++private:
++  ~DOMGeoPositionOptions() {}
++
++  PRBool mEnableHighAccuracy;
++  bool mHasTimeout;
++  PRInt32 mTimeout;
++  bool mHasMaxAge;
++  PRInt32 mMaximumAge;
++};
+diff --git a/dom/src/geolocation/GPSDGeolocationProvider.js b/dom/src/geolocation/GPSDGeolocationProvider.js
+--- a/dom/src/geolocation/GPSDGeolocationProvider.js
++++ b/dom/src/geolocation/GPSDGeolocationProvider.js
+@@ -38,17 +38,17 @@
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
+ 
+ const Ci = Components.interfaces;
+ const Cc = Components.classes;
+ 
+-var gLoggingEnabled = false;
++var gLoggingEnabled = true;
+ 
+ function LOG(aMsg) {
+   if (gLoggingEnabled)
+   {
+     aMsg = ("*** GPSD GEO: " + aMsg);
+     Cc["@mozilla.org/consoleservice;1"].getService(Ci.nsIConsoleService).logStringMessage(aMsg);
+     dump(aMsg);
+   }
+@@ -256,13 +256,13 @@ GPSDProvider.prototype = {
+     var pump = Cc["@mozilla.org/network/input-stream-pump;1"].createInstance(Ci.nsIInputStreamPump);
+     pump.init(this.inputStream, -1, -1, 0, 0, false);
+     pump.asyncRead(dataListener, null);
+ 
+   },
+   
+ };
+ 
+-var components = [GPSDProvider];
++/*var components = [GPSDProvider];
+ 
+ function NSGetModule(compMgr, fileSpec) {
+   return XPCOMUtils.generateModule(components);
+-}
++  }*/
+diff --git a/dom/src/geolocation/GeolocationMessageUtils.h b/dom/src/geolocation/GeolocationMessageUtils.h
+new file mode 100644
+--- /dev/null
++++ b/dom/src/geolocation/GeolocationMessageUtils.h
+@@ -0,0 +1,172 @@
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Geolocation.
++ *
++ * The Initial Developer of the Original Code is Mozilla Foundation
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *  Josh Matthews <josh@joshmatthews.net>  (Original Author)
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#ifndef GeolocationMessageUtils_h
++#define GeolocationMessageUtils_h
++
++#include "IPC/IPCMessageUtils.h"
++#include "domstubs.h"
++
++struct PositionData
++{
++  DOMTimeStamp timeStamp;
++
++  bool hasCoords;
++  // nsIDOMGeoPositionCoords
++  double latitude;
++  double longitude;
++  double altitude;
++  double accuracy;
++  double altitudeAccuracy;
++  double heading;
++  double speed;
++
++  bool hasAddress;
++  // nsIDOMGeoPositionAddress
++  nsString streetNumber;
++  nsString street;
++  nsString premises;
++  nsString city;
++  nsString county;
++  nsString region;
++  nsString country;
++  nsString countryCode;
++  nsString postalCode;
++};
++
++namespace IPC {
++  
++template <>
++struct ParamTraits<PositionData>
++{
++  typedef PositionData paramType;
++  
++  static void Write(Message* aMsg, const paramType& aParam)
++  {
++    WriteParam(aMsg, aParam.timeStamp);
++
++    WriteParam(aMsg, aParam.hasCoords);
++    if (aParam.hasCoords) {
++      WriteParam(aMsg, aParam.longitude);
++      WriteParam(aMsg, aParam.latitude);
++      WriteParam(aMsg, aParam.altitude);
++      WriteParam(aMsg, aParam.accuracy);
++      WriteParam(aMsg, aParam.altitudeAccuracy);
++      WriteParam(aMsg, aParam.heading);
++      WriteParam(aMsg, aParam.speed);
++    }
++
++    WriteParam(aMsg, aParam.hasAddress);
++    if (aParam.hasAddress) {
++      WriteParam(aMsg, aParam.streetNumber);
++      WriteParam(aMsg, aParam.street);
++      WriteParam(aMsg, aParam.premises);
++      WriteParam(aMsg, aParam.city);
++      WriteParam(aMsg, aParam.county);
++      WriteParam(aMsg, aParam.region);
++      WriteParam(aMsg, aParam.country);
++      WriteParam(aMsg, aParam.countryCode);
++      WriteParam(aMsg, aParam.postalCode);
++    }
++  }
++  
++  static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
++  {
++    DOMTimeStamp timeStamp;
++    bool hasCoords, hasAddress;
++    double latitude, longitude, altitude, accuracy, altitudeAccuracy,
++           heading, speed;
++    nsString streetNumber, street, premises, city, county, region, country,
++             countryCode, postalCode;
++    
++    if (ReadParam(aMsg, aIter, &timeStamp) &&
++        ReadParam(aMsg, aIter, &hasCoords) &&
++        (hasCoords &&
++         ReadParam(aMsg, aIter, &latitude) &&
++         ReadParam(aMsg, aIter, &longitude) &&
++         ReadParam(aMsg, aIter, &altitude) &&
++         ReadParam(aMsg, aIter, &accuracy) &&
++         ReadParam(aMsg, aIter, &altitudeAccuracy) &&
++         ReadParam(aMsg, aIter, &heading) &&
++         ReadParam(aMsg, aIter, &speed)) &&
++        ReadParam(aMsg, aIter, &hasAddress) &&
++        (hasAddress &&
++         ReadParam(aMsg, aIter, &streetNumber) &&
++         ReadParam(aMsg, aIter, &street) &&
++         ReadParam(aMsg, aIter, &premises) &&
++         ReadParam(aMsg, aIter, &city) &&
++         ReadParam(aMsg, aIter, &county) &&
++         ReadParam(aMsg, aIter, &region) &&
++         ReadParam(aMsg, aIter, &country) &&
++         ReadParam(aMsg, aIter, &countryCode) &&
++         ReadParam(aMsg, aIter, &postalCode))) {
++      aResult->timeStamp = timeStamp;
++      aResult->hasCoords = hasCoords;
++      if (hasCoords) {
++        aResult->latitude = latitude;
++        aResult->longitude = longitude;
++        aResult->altitude = altitude;
++        aResult->altitudeAccuracy = altitudeAccuracy;
++        aResult->heading = heading;
++        aResult->speed = speed;
++      }
++      aResult->hasAddress = hasAddress;
++      if (hasAddress) {
++        aResult->streetNumber = streetNumber;
++        aResult->street = street;
++        aResult->premises = premises;
++        aResult->city = city;
++        aResult->county = county;
++        aResult->region = region;
++        aResult->country = country;
++        aResult->countryCode = countryCode;
++        aResult->postalCode = postalCode;
++      }
++      return true;
++    }
++
++    return false;
++  }
++
++  static void Log(const paramType& aParam, std::wstring* aLog)
++  {
++    aLog->append(StringPrintf(L"[%u]", aParam.timeStamp));
++  }
++};
++
++}
++
++#endif // GeolocationMessageUtils_h
+diff --git a/dom/src/geolocation/GeolocationRequestChild.cpp b/dom/src/geolocation/GeolocationRequestChild.cpp
+new file mode 100644
+--- /dev/null
++++ b/dom/src/geolocation/GeolocationRequestChild.cpp
+@@ -0,0 +1,83 @@
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Geolocation.
++ *
++ * The Initial Developer of the Original Code is Mozilla Foundation
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *  Josh Matthews <josh@joshmatthews.net>  (Original Author)
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#include "GeolocationRequestChild.h"
++#include "nsGeolocationContent.h"
++#include "DOMGeoPosition.h"
++
++namespace mozilla {
++namespace dom {
++    
++GeolocationRequestChild::GeolocationRequestChild(
++    nsGeolocationContent* aLocator,
++    nsIDOMGeoPositionCallback* aCallback,
++    nsIDOMGeoPositionErrorCallback* aErrorCallback)
++: mLocator(aLocator)
++{
++  mRequest = new nsGeolocationRequest(NULL, aCallback, aErrorCallback, NULL);
++}
++
++GeolocationRequestChild::~GeolocationRequestChild()
++{
++}
++
++void
++GeolocationRequestChild::ActorDestroy(ActorDestroyReason why)
++{
++  // mLocator should always still exist at this point, as the actor
++  // will be deleted in the locator's destructor.
++  
++  mLocator->RemoveRequest(this);
++}
++
++bool
++GeolocationRequestChild::RecvUpdate(const PositionData& aData)
++{
++  nsCOMPtr<nsIDOMGeoPosition> position = new DOMGeoPosition(aData);
++  
++  static_cast<nsGeolocationRequest*>(mRequest.get())->SendLocation(position);
++  return true;
++}
++
++bool
++GeolocationRequestChild::RecvError(const PRInt16& aError)
++{
++  static_cast<nsGeolocationRequest*>(mRequest.get())->NotifyError(aError);
++  return true;
++}
++
++}
++}
+diff --git a/dom/src/geolocation/GeolocationRequestChild.h b/dom/src/geolocation/GeolocationRequestChild.h
+new file mode 100644
+--- /dev/null
++++ b/dom/src/geolocation/GeolocationRequestChild.h
+@@ -0,0 +1,76 @@
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Geolocation.
++ *
++ * The Initial Developer of the Original Code is Mozilla Foundation
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *  Josh Matthews <josh@joshmatthews.net>  (Original Author)
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#ifndef GeolocationRequestChild_h
++#define GeolocationRequestChild_h
++
++#include "mozilla/dom/PGeolocationRequestChild.h"
++#include "nsGeolocationContent.h"
++
++class nsIDOMGeoPositionCallback;
++class nsIDOMGeoPositionErrorCallback;
++class nsIDOMGeoPositionOptions;
++
++struct PositionData;
++
++namespace mozilla {
++namespace dom {
++
++class GeolocationRequestChild : public PGeolocationRequestChild
++{
++public:
++  GeolocationRequestChild(nsGeolocationContent* aLocator,
++                          nsIDOMGeoPositionCallback* aCallback,
++                          nsIDOMGeoPositionErrorCallback* aErrorCallback);
++  ~GeolocationRequestChild();
++
++  NS_OVERRIDE
++  virtual bool RecvUpdate(const PositionData& aData);
++  NS_OVERRIDE
++  virtual bool RecvError(const PRInt16& aError);
++
++private:
++  NS_OVERRIDE
++  void ActorDestroy(ActorDestroyReason why);
++  
++  nsCOMPtr<nsIGeolocationRequest> mRequest;
++  nsGeolocationContent* mLocator;
++};
++
++}
++}
++
++#endif // GeolocationRequestChild_h
+diff --git a/dom/src/geolocation/GeolocationRequestParent.cpp b/dom/src/geolocation/GeolocationRequestParent.cpp
+new file mode 100644
+--- /dev/null
++++ b/dom/src/geolocation/GeolocationRequestParent.cpp
+@@ -0,0 +1,198 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Geolocation code.
++ *
++ * The Initial Developer of the Original Code is
++ *   the Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Josh Matthews <josh@joshmatthews.net> (Initial Developer)
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#include "GeolocationRequestParent.h"
++#include "RemotePositionCallback.h"
++#include "nsGeolocationChrome.h"
++#include "GeolocationMessageUtils.h"
++#include "mozilla/chrome/RegistryMessageUtils.h"
++#include "mozilla/dom/TabParent.h"
++#include "nsNetUtil.h"
++#include "nsGlobalWindow.h"
++#include "DOMGeoPosition.h"
++
++namespace mozilla {
++namespace dom {
++
++GeolocationRequestParent::GeolocationRequestParent()
++{
++}
++
++GeolocationRequestParent::~GeolocationRequestParent()
++{
++}
++
++void
++GeolocationRequestParent::ActorDestroy(ActorDestroyReason why)
++{
++  nsCOMPtr<nsIDOMGeoPositionCallback> callback = do_QueryReferent(mCallback);
++  if (callback) {
++    static_cast<RemotePositionCallback*>(callback.get())->OwnerDestroyed();
++  }
++  nsCOMPtr<nsIDOMGeoPositionErrorCallback> errorCallback =
++    do_QueryReferent(mErrorCallback);
++  if (errorCallback) {
++    static_cast<RemotePositionErrorCallback*>(errorCallback.get())->OwnerDestroyed();
++  }
++}
++
++nsresult
++GeolocationRequestParent::Init(nsGlobalWindow* aWindow,
++                               const SerializedURI& aURI)
++{
++  mOptions = NULL;
++
++  nsCOMPtr<nsIIOService> io (do_GetIOService());
++  nsresult rv = NS_NewURI(getter_AddRefs(mURI), aURI.spec,
++                          aURI.charset.get(), nsnull, io);
++  if (NS_FAILED(rv)) {
++    return rv;
++  }
++
++  nsCOMPtr<nsIDOMNavigator> navigator;
++  rv = aWindow->GetNavigator(getter_AddRefs(navigator));
++  if (NS_FAILED(rv)) {
++    return rv;
++  }
++  nsCOMPtr<nsIDOMNavigatorGeolocation> geolocation(do_QueryInterface(navigator));
++  rv = geolocation->GetGeolocation(getter_AddRefs(mLocator));
++  if (NS_FAILED(rv)) {
++    NS_WARNING("GetGeolocation failed to return a mLocator!!\n");
++    return rv;
++  }
++  static_cast<nsGeolocationChrome*>(mLocator.get())->SetOwnerURI(mURI);
++
++  // The callbacks are a bit complicated with respect to ownership. We need to
++  // retain a reference to them in case the protocol dies before the callbacks
++  // do, but we can't use a strong reference since the protocol is deleted in
++  // the callback's destructor.
++  
++  nsISupportsWeakReference* callback = new RemotePositionCallback(this);
++  NS_ADDREF(callback);
++  mCallback = do_GetWeakReference(callback);
++
++  nsISupportsWeakReference* errCallback = new RemotePositionErrorCallback(this);
++  NS_ADDREF(errCallback);
++  mErrorCallback = do_GetWeakReference(errCallback);
++
++  return NS_OK;
++}
++
++void
++GeolocationRequestParent::Cleanup()
++{
++  mOptions = nsnull;
++  mLocator = nsnull;
++
++  nsCOMPtr<nsIDOMGeoPositionErrorCallback> errorCallback =
++      do_QueryReferent(mErrorCallback);
++  NS_IF_RELEASE(errorCallback);
++
++  // IMPORTANT: This must be the last action performed.  In the event that
++  // ClearWatch() is received, the callbacks are unused and are destroyed
++  // at this point.  When the following callback is destroyed, it also deletes
++  // this actor, so we want to make sure we're all finished here.
++  nsCOMPtr<nsIDOMGeoPositionCallback> callback = do_QueryReferent(mCallback);
++  NS_IF_RELEASE(callback);
++}
++
++bool
++GeolocationRequestParent::RecvSetTimeout(const PRInt32& aTimeout)
++{
++  if (!mOptions)
++    mOptions = new DOMGeoPositionOptions();
++  mOptions->SetTimeout(aTimeout);
++  return true;
++}
++
++bool
++GeolocationRequestParent::RecvSetMaximumAge(const PRInt32& aMaxAge)
++{
++  if (!mOptions)
++    mOptions = new DOMGeoPositionOptions();
++  mOptions->SetMaximumAge(aMaxAge);
++  return true;
++}
++
++bool
++GeolocationRequestParent::RecvGetCurrentPosition()
++{
++  nsCOMPtr<nsIDOMGeoPositionCallback> callback = do_QueryReferent(mCallback);
++  nsCOMPtr<nsIDOMGeoPositionErrorCallback> errorCallback =
++      do_QueryReferent(mErrorCallback);
++
++  NS_ENSURE_TRUE(mLocator, false);
++  nsresult rv = mLocator->GetCurrentPosition(callback, errorCallback, mOptions);
++  if (NS_FAILED(rv))
++    NS_WARNING("GetCurrentPosition was unsuccessful");
++
++  // Cleanup();
++  return true;
++}
++
++bool
++GeolocationRequestParent::RecvWatchPosition(PRInt32* aId)
++{
++  nsCOMPtr<nsIDOMGeoPositionCallback> callback = do_QueryReferent(mCallback);
++  nsCOMPtr<nsIDOMGeoPositionErrorCallback> errorCallback =
++      do_QueryReferent(mErrorCallback);
++
++  NS_ENSURE_TRUE(mLocator, false);
++  nsresult rv = mLocator->WatchPosition(callback, errorCallback, mOptions, aId);
++  if (NS_FAILED(rv))
++    NS_WARNING("WatchPosition was unsuccessful");
++
++  //  Cleanup();
++  return true;
++}
++
++bool
++GeolocationRequestParent::RecvClearWatch(const PRInt32& aId)
++{
++  NS_ENSURE_TRUE(mLocator, false);
++
++  nsresult rv = mLocator->ClearWatch(aId);
++  if (NS_FAILED(rv))
++    NS_WARNING("ClearWatch was unsuccessful");
++
++  //  Cleanup();
++  return true;
++}
++
++}
++}
+diff --git a/dom/src/geolocation/GeolocationRequestParent.h b/dom/src/geolocation/GeolocationRequestParent.h
+new file mode 100644
+--- /dev/null
++++ b/dom/src/geolocation/GeolocationRequestParent.h
+@@ -0,0 +1,95 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Geolocation code.
++ *
++ * The Initial Developer of the Original Code is
++ *   the Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Josh Matthews <josh@joshmatthews.net> (Initial Developer)
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#ifndef GeolocationRequestParent_h
++#define GeolocationRequestParent_h
++
++#include "mozilla/dom/PGeolocationRequestParent.h"
++#include "mozilla/geolocation/GeolocationMessageUtils.h"
++#include "nsIURI.h"
++#include "nsIDOMGeoGeolocation.h"
++#include "nsWeakPtr.h"
++
++class nsGeolocationChrome;
++class nsIDOMGeoPositionCallback;
++class nsIDOMGeoPositionErrorCallback;
++class nsIDOMGeoPositionOptions;
++class nsGlobalWindow;
++class SerializedURI;
++
++namespace mozilla {
++namespace dom {
++
++class GeolocationRequestParent : public PGeolocationRequestParent
++{
++public:
++  GeolocationRequestParent();
++  ~GeolocationRequestParent();
++
++  nsresult Init(nsGlobalWindow* aWindow, const SerializedURI& aURI);
++
++  NS_OVERRIDE
++  bool RecvSetTimeout(const PRInt32& aTimeout);
++  NS_OVERRIDE
++  bool RecvSetMaximumAge(const PRInt32& aMaxAge);
++  NS_OVERRIDE
++  bool RecvGetCurrentPosition();
++  NS_OVERRIDE
++  bool RecvWatchPosition(PRInt32* aId);
++  NS_OVERRIDE
++  bool RecvClearWatch(const PRInt32& aId);
++
++  bool ShouldPersist();
++
++private:
++  void Cleanup();
++
++  NS_OVERRIDE
++  void ActorDestroy(ActorDestroyReason why);
++  
++  nsCOMPtr<nsIURI> mURI;
++  nsCOMPtr<nsIDOMGeoGeolocation> mLocator;
++  nsWeakPtr mCallback;
++  nsWeakPtr mErrorCallback;
++  nsCOMPtr<nsIDOMGeoPositionOptions> mOptions;
++};
++
++}
++}
++
++#endif // GeolocationRequestParent_h
+diff --git a/dom/src/geolocation/Makefile.in b/dom/src/geolocation/Makefile.in
+--- a/dom/src/geolocation/Makefile.in
++++ b/dom/src/geolocation/Makefile.in
+@@ -43,24 +43,35 @@ include $(DEPTH)/config/autoconf.mk
+ 
+ MODULE         = dom
+ LIBRARY_NAME   = jsdomgeolocation_s
+ LIBXUL_LIBRARY = 1
+ 
+ # we don't want the shared lib, but we want to force the creation of a static lib.
+ FORCE_STATIC_LIB = 1
+ 
++EXPORTS_NAMESPACES = mozilla/geolocation
++
++EXPORTS_mozilla/geolocation = \
++		GeolocationMessageUtils.h \
++		GeolocationRequestParent.h \
++		nsGeolocation.h \
++		$(NULL)
+ 
+ CPPSRCS		= \
+ 		nsGeolocation.cpp \
+ 		nsGeolocationChrome.cpp \
+ 		$(NULL)
+ 
+ ifdef MOZ_IPC
+ CPPSRCS += 	nsGeolocationContent.cpp \
++		RemotePositionCallback.cpp \
++		GeolocationRequestParent.cpp \
++		GeolocationRequestChild.cpp \
++		DOMGeoPosition.cpp \
+ 		$(NULL)
+ endif
+ 
+ EXTRA_DSO_LDOPTS = \
+ 		$(MOZ_COMPONENT_LIBS) \
+ 		$(NULL)
+ 
+ LOCAL_INCLUDES = \
+@@ -77,11 +88,13 @@ LOCAL_INCLUDES	+= $(MOZ_PLATFORM_MAEMO_C
+ endif
+ 
+ EXTRA_COMPONENTS = \
+                  NetworkGeolocationProvider.js \
+                  GPSDGeolocationProvider.js \
+                  $(NULL)
+ 
+ 
++include $(topsrcdir)/config/config.mk
++include $(topsrcdir)/ipc/chromium/chromium-config.mk
+ include $(topsrcdir)/config/rules.mk
+ 
+ DEFINES += -D_IMPL_NS_LAYOUT
+diff --git a/dom/src/geolocation/NetworkGeolocationProvider.js b/dom/src/geolocation/NetworkGeolocationProvider.js
+--- a/dom/src/geolocation/NetworkGeolocationProvider.js
++++ b/dom/src/geolocation/NetworkGeolocationProvider.js
+@@ -1,25 +1,25 @@
+ Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
+ 
+ const Ci = Components.interfaces;
+ const Cc = Components.classes;
+ 
+-var gLoggingEnabled = false;
+-var gTestingEnabled = false;
++var gLoggingEnabled = true;
++var gTestingEnabled = true;
+ 
+ function nowInSeconds()
+ {
+     return Date.now() / 1000;
+ }
+ 
+ function LOG(aMsg) {
+   if (gLoggingEnabled)
+   {
+-    aMsg = ("*** WIFI GEO: " + aMsg);
++    aMsg = ("*** WIFI GEO: " + aMsg + "\n");
+     Cc["@mozilla.org/consoleservice;1"].getService(Ci.nsIConsoleService).logStringMessage(aMsg);
+     dump(aMsg);
+   }
+ }
+ 
+ function WifiGeoAddressObject(streetNumber, street, premises, city, county, region, country, countryCode, postalCode) {
+ 
+   this.streetNumber = streetNumber;
+diff --git a/dom/src/geolocation/PGeolocationRequest.ipdl b/dom/src/geolocation/PGeolocationRequest.ipdl
+new file mode 100644
+--- /dev/null
++++ b/dom/src/geolocation/PGeolocationRequest.ipdl
+@@ -0,0 +1,68 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Geolocation code.
++ *
++ * The Initial Developer of the Original Code is
++ *   the Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Josh Matthews <josh@joshmatthews.net> (Initial Developer)
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++include protocol "PIFrameEmbedding.ipdl";
++
++include "mozilla/geolocation/GeolocationMessageUtils.h";
++
++using PositionData;
++
++namespace mozilla {
++namespace dom {
++
++sync protocol PGeolocationRequest
++{
++  manager PIFrameEmbedding;
++
++parent:
++  SetTimeout(PRInt32 timeout);
++  SetMaximumAge(PRInt32 maxAge);
++  GetCurrentPosition();
++  sync WatchPosition() returns (PRInt32 id);
++  ClearWatch(PRInt32 id);
++
++child:
++  Update(PositionData position);
++  Error(PRInt16 error);
++
++both:
++  __delete__();
++};
++
++}
++}
+diff --git a/dom/src/geolocation/RemotePositionCallback.cpp b/dom/src/geolocation/RemotePositionCallback.cpp
+new file mode 100644
+--- /dev/null
++++ b/dom/src/geolocation/RemotePositionCallback.cpp
+@@ -0,0 +1,149 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Geolocation code.
++ *
++ * The Initial Developer of the Original Code is
++ *   the Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Josh Matthews <josh@joshmatthews.net> (Initial Developer)
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#include "GeolocationRequestParent.h"
++#include "RemotePositionCallback.h"
++#include "nsIDOMGeoPositionError.h"
++#include "nsIDOMGeoPosition.h"
++#include "nsIDOMGeoPositionCoords.h"
++#include "nsIDOMGeoPositionAddress.h"
++
++using mozilla::dom::PGeolocationRequestParent;
++
++NS_INTERFACE_MAP_BEGIN(RemotePositionCallback)
++  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIDOMGeoPositionCallback)
++  NS_INTERFACE_MAP_ENTRY(nsIDOMGeoPositionCallback)
++  NS_INTERFACE_MAP_ENTRY(nsISupportsWeakReference)
++NS_INTERFACE_MAP_END
++
++NS_IMPL_ADDREF(RemotePositionCallback)
++NS_IMPL_RELEASE(RemotePositionCallback)
++
++RemotePositionCallback::RemotePositionCallback(PGeolocationRequestParent* aParent)
++: mRequest(aParent)
++{
++}
++
++RemotePositionCallback::~RemotePositionCallback()
++{
++  if (mRequest && !PGeolocationRequestParent::Send__delete__(mRequest)) {
++    NS_WARNING("Communication error");
++  }
++}
++
++NS_IMETHODIMP
++RemotePositionCallback::HandleEvent(nsIDOMGeoPosition* aPosition)
++{
++#define _(getOperation) \
++  if (NS_FAILED((rv = (getOperation)))) \
++    return rv;
++
++  nsresult rv;
++  PositionData data;
++  nsCOMPtr<nsIDOMGeoPositionCoords> coords;
++  nsCOMPtr<nsIDOMGeoPositionAddress> address;
++  _(aPosition->GetTimestamp(&data.timeStamp));
++  _(aPosition->GetCoords(getter_AddRefs(coords)));
++  data.hasCoords = !!coords;
++  if (coords) {
++    _(coords->GetLatitude(&data.latitude));
++    _(coords->GetLongitude(&data.longitude));
++    _(coords->GetAltitude(&data.altitude));
++    _(coords->GetAltitudeAccuracy(&data.altitudeAccuracy));
++    _(coords->GetHeading(&data.heading));
++    _(coords->GetSpeed(&data.speed));
++  }
++  _(aPosition->GetAddress(getter_AddRefs(address)));
++  data.hasAddress = !!address;
++  if (address) {
++    _(address->GetStreetNumber(data.streetNumber));
++    _(address->GetStreet(data.street));
++    _(address->GetPremises(data.premises));
++    _(address->GetCity(data.city));
++    _(address->GetCounty(data.county));
++    _(address->GetRegion(data.region));
++    _(address->GetCountry(data.country));
++    _(address->GetCountryCode(data.countryCode));
++    _(address->GetPostalCode(data.postalCode));
++  }
++  
++#undef _
++  
++  if (mRequest && mRequest->SendUpdate(data)) {
++    rv = NS_OK;
++  }
++  else {
++    rv = NS_ERROR_FAILURE;
++  }
++
++  return rv;
++}
++
++NS_INTERFACE_MAP_BEGIN(RemotePositionErrorCallback)
++  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIDOMGeoPositionErrorCallback)
++  NS_INTERFACE_MAP_ENTRY(nsIDOMGeoPositionErrorCallback)
++  NS_INTERFACE_MAP_ENTRY(nsISupportsWeakReference)
++NS_INTERFACE_MAP_END
++
++NS_IMPL_ADDREF(RemotePositionErrorCallback)
++NS_IMPL_RELEASE(RemotePositionErrorCallback)
++
++RemotePositionErrorCallback::RemotePositionErrorCallback(PGeolocationRequestParent* aRequest)
++: mRequest(aRequest)
++{
++}
++
++RemotePositionErrorCallback::~RemotePositionErrorCallback()
++{
++}
++
++NS_IMETHODIMP
++RemotePositionErrorCallback::HandleEvent(nsIDOMGeoPositionError* aError)
++{
++  PRInt16 code;
++  nsresult rv;
++  aError->GetCode(&code);
++  if (mRequest && mRequest->SendError(code)) {
++    rv = NS_OK;
++  }
++  else {
++    rv = NS_ERROR_FAILURE;
++  }
++
++  return rv;
++}
+diff --git a/dom/src/geolocation/RemotePositionCallback.h b/dom/src/geolocation/RemotePositionCallback.h
+new file mode 100644
+--- /dev/null
++++ b/dom/src/geolocation/RemotePositionCallback.h
+@@ -0,0 +1,83 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Geolocation code.
++ *
++ * The Initial Developer of the Original Code is
++ *   the Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Josh Matthews <josh@joshmatthews.net> (Initial Developer)
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#include "nsIDOMGeoPositionCallback.h"
++#include "nsIDOMGeoPositionErrorCallback.h"
++#include "nsWeakReference.h"
++
++namespace mozilla {
++namespace dom {
++class PGeolocationRequestParent;
++class PIFrameEmbeddingChild;
++}
++}
++
++using mozilla::dom::PGeolocationRequestParent;
++using mozilla::dom::PIFrameEmbeddingChild;
++
++class RemotePositionCallback : public nsIDOMGeoPositionCallback,
++                               public nsSupportsWeakReference
++{
++public:
++  NS_DECL_ISUPPORTS
++  NS_DECL_NSIDOMGEOPOSITIONCALLBACK
++  
++  RemotePositionCallback(PGeolocationRequestParent* aParent);
++  ~RemotePositionCallback();
++
++  void OwnerDestroyed() { mRequest = NULL; }
++
++ private:
++  PGeolocationRequestParent* mRequest;
++};
++
++class RemotePositionErrorCallback : public nsIDOMGeoPositionErrorCallback,
++                                    public nsSupportsWeakReference
++{
++public:
++  NS_DECL_ISUPPORTS
++  NS_DECL_NSIDOMGEOPOSITIONERRORCALLBACK
++  
++  RemotePositionErrorCallback(PGeolocationRequestParent* aParent);
++  ~RemotePositionErrorCallback();
++
++  void OwnerDestroyed() { mRequest = NULL; }
++
++private:
++  PGeolocationRequestParent* mRequest;
++};
+diff --git a/dom/src/geolocation/ipdl.mk b/dom/src/geolocation/ipdl.mk
+new file mode 100644
+--- /dev/null
++++ b/dom/src/geolocation/ipdl.mk
+@@ -0,0 +1,40 @@
++# ***** BEGIN LICENSE BLOCK *****
++# Version: MPL 1.1/GPL 2.0/LGPL 2.1
++#
++# The contents of this file are subject to the Mozilla Public License Version
++# 1.1 (the "License"); you may not use this file except in compliance with
++# the License. You may obtain a copy of the License at
++# http://www.mozilla.org/MPL/
++#
++# Software distributed under the License is distributed on an "AS IS" basis,
++# WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++# for the specific language governing rights and limitations under the
++# License.
++#
++# The Original Code is Geolocation code.
++#
++# The Initial Developer of the Original Code is
++#   the Mozilla Foundation.
++# Portions created by the Initial Developer are Copyright (C) 2010
++# the Initial Developer. All Rights Reserved.
++#
++# Contributor(s):
++#   Josh Matthews <josh@joshmatthews.net> (Initial Developer)
++#
++# Alternatively, the contents of this file may be used under the terms of
++# either the GNU General Public License Version 2 or later (the "GPL"), or
++# the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++# in which case the provisions of the GPL or the LGPL are applicable instead
++# of those above. If you wish to allow use of your version of this file only
++# under the terms of either the GPL or the LGPL, and not to allow others to
++# use your version of this file under the terms of the MPL, indicate your
++# decision by deleting the provisions above and replace them with the notice
++# and other provisions required by the GPL or the LGPL. If you do not delete
++# the provisions above, a recipient may use your version of this file under
++# the terms of any one of the MPL, the GPL or the LGPL.
++#
++# ***** END LICENSE BLOCK *****
++
++IPDLSRCS = \
++	PGeolocationRequest.ipdl \
++	$(NULL)
+diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolocation.cpp
+--- a/dom/src/geolocation/nsGeolocation.cpp
++++ b/dom/src/geolocation/nsGeolocation.cpp
+@@ -138,16 +138,22 @@ nsGeolocationRequest::nsGeolocationReque
+   : mAllowed(PR_FALSE),
+     mCleared(PR_FALSE),
+     mHasSentData(PR_FALSE),
+     mCallback(aCallback),
+     mErrorCallback(aErrorCallback),
+     mOptions(aOptions),
+     mLocator(aLocator)
+ {
++  // If there's no reference geolocator object, this request is part of
++  // an IPC request.  That means we're on the content side, so permissions
++  // have already been taken care of elsewhere.
++  if (!aLocator) {
++    mAllowed = PR_TRUE;
++  }
+ }
+ 
+ nsGeolocationRequest::~nsGeolocationRequest()
+ {
+ }
+ 
+ nsresult
+ nsGeolocationRequest::Init()
+@@ -716,18 +722,20 @@ nsGeolocation::Init(nsIDOMWindow* aConte
+ 
+   // Grab the uri of the document
+   nsCOMPtr<nsIDOMDocument> domdoc;
+   aContentDom->GetDocument(getter_AddRefs(domdoc));
+   nsCOMPtr<nsIDocument> doc = do_QueryInterface(domdoc);
+   if (!doc)
+     return NS_ERROR_FAILURE;
+ 
+-  doc->NodePrincipal()->GetURI(getter_AddRefs(mURI));
+-    
++  //xxx
++  //doc->NodePrincipal()->GetURI(getter_AddRefs(mURI));
++  mURI = doc->GetDocumentURI();
++
+   if (!mURI)
+     return NS_ERROR_FAILURE;
+ 
+   return NS_OK;
+ }
+ 
+ #ifndef WINCE_WINDOWS_MOBILE
+ DOMCI_DATA(GeoPositionCoords, void)
+diff --git a/dom/src/geolocation/nsGeolocation.h b/dom/src/geolocation/nsGeolocation.h
+--- a/dom/src/geolocation/nsGeolocation.h
++++ b/dom/src/geolocation/nsGeolocation.h
+@@ -79,21 +79,22 @@ class nsGeolocationRequest : public nsIG
+                        nsIDOMGeoPositionOptions* options);
+   nsresult Init();
+   void Shutdown();
+ 
+   void SendLocation(nsIDOMGeoPosition* location);
+   void MarkCleared();
+   PRBool Allowed() {return mAllowed;}
+ 
++  void NotifyError(PRInt16 errorCode);
++
+   ~nsGeolocationRequest();
+ 
+  private:
+ 
+-  void NotifyError(PRInt16 errorCode);
+   PRPackedBool mAllowed;
+   PRPackedBool mCleared;
+   PRPackedBool mHasSentData;
+ 
+   nsCOMPtr<nsITimer> mTimeoutTimer;
+   nsCOMPtr<nsIDOMGeoPositionCallback> mCallback;
+   nsCOMPtr<nsIDOMGeoPositionErrorCallback> mErrorCallback;
+   nsCOMPtr<nsIDOMGeoPositionOptions> mOptions;
+diff --git a/dom/src/geolocation/nsGeolocationChrome.h b/dom/src/geolocation/nsGeolocationChrome.h
+--- a/dom/src/geolocation/nsGeolocationChrome.h
++++ b/dom/src/geolocation/nsGeolocationChrome.h
+@@ -61,16 +61,18 @@ class nsGeolocationChrome : public nsGeo
+   void Update(nsIDOMGeoPosition* aPosition);
+ 
+   // Returns true if any of the callbacks are repeating
+   PRBool HasActiveCallbacks();
+ 
+   // Remove request from all callbacks arrays
+   void RemoveRequest(nsGeolocationRequest* request);
+ 
++  void SetOwnerURI(nsIURI* aURI) { mURI = aURI; }
++
+   // Shutting down.
+   NS_OVERRIDE
+   void Shutdown();
+ 
+   // Check to see if the widnow still exists
+   PRBool WindowOwnerStillExists();
+ 
+  private:
+diff --git a/dom/src/geolocation/nsGeolocationContent.cpp b/dom/src/geolocation/nsGeolocationContent.cpp
+--- a/dom/src/geolocation/nsGeolocationContent.cpp
++++ b/dom/src/geolocation/nsGeolocationContent.cpp
+@@ -31,50 +31,112 @@
+  * use your version of this file under the terms of the MPL, indicate your
+  * decision by deleting the provisions above and replace them with the notice
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
++#include "GeolocationRequestChild.h"
++#include "mozilla/dom/PIFrameEmbeddingChild.h"
+ #include "nsDOMClassInfo.h"
+ #include "nsGeolocationContent.h"
++#include "GeolocationMessageUtils.h"
++#include "nsIDocument.h"
++#include "mozilla/chrome/RegistryMessageUtils.h"
++
++using mozilla::dom::PGeolocationRequestChild;
++using mozilla::dom::GeolocationRequestChild;
++using mozilla::dom::PIFrameEmbeddingChild;
+ 
+ NS_INTERFACE_MAP_BEGIN(nsGeolocationContent)
+   NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIDOMGeoGeolocation)
+   NS_INTERFACE_MAP_ENTRY(nsIDOMGeoGeolocation)
+   NS_DOM_INTERFACE_MAP_ENTRY_CLASSINFO(GeoGeolocation)
+ NS_INTERFACE_MAP_END
+ 
+ NS_IMPL_ADDREF(nsGeolocationContent)
+ NS_IMPL_RELEASE(nsGeolocationContent)
+ 
+-nsGeolocationContent::nsGeolocationContent()
++nsGeolocationContent::nsGeolocationContent(PIFrameEmbeddingChild* aTabChild)
++: mTabChild(aTabChild)
+ {
+ }
+ 
+ nsGeolocationContent::~nsGeolocationContent()
+ {
++  for (PRUint32 i = 0; i < mRequests.Length(); i++) {
++    PGeolocationRequestChild::Send__delete__(mRequests[i]);
++  }
++  mRequests.Clear();
+ }
+ 
++void
++nsGeolocationContent::RemoveRequest(PGeolocationRequestChild* aActor)
++{
++  mRequests.RemoveElement(aActor);
++}
++
++PGeolocationRequestChild*
++nsGeolocationContent::CreateRequest(nsIDOMGeoPositionCallback* aCallback,
++                                    nsIDOMGeoPositionErrorCallback* aErrorCallback,
++                                    nsIDOMGeoPositionOptions* aOptions)
++{
++  SerializedURI uri;
++  if (mURI) {
++    mURI->GetSpec(uri.spec);
++    mURI->GetOriginCharset(uri.charset);
++  }
++
++  PGeolocationRequestChild* request =
++      new GeolocationRequestChild(this, aCallback, aErrorCallback);
++  mTabChild->SendPGeolocationRequestConstructor(request, mTabChild, uri);
++
++  if (aOptions) {
++    PRInt32 timeout, maxAge;
++    if (NS_SUCCEEDED(aOptions->GetTimeout(&timeout))) {
++      request->SendSetTimeout(timeout);
++    }
++    if (NS_SUCCEEDED(aOptions->GetMaximumAge(&maxAge))) {
++      request->SendSetMaximumAge(maxAge);
++    }
++  }
++
++  return request;
++} 
++
+ NS_IMETHODIMP
+ nsGeolocationContent::GetCurrentPosition(nsIDOMGeoPositionCallback* aCallback,
+                                          nsIDOMGeoPositionErrorCallback* aErrorCallback,
+                                          nsIDOMGeoPositionOptions* aOptions)
+ {
+-  return NS_ERROR_NOT_IMPLEMENTED;
++  NS_ENSURE_ARG_POINTER(aCallback);
++  PGeolocationRequestChild* request = CreateRequest(aCallback,
++                                                    aErrorCallback,
++                                                    aOptions);
++  request->SendGetCurrentPosition();
++  mRequests.AppendElement(request);
++  return NS_OK;
+ }
+ 
+ NS_IMETHODIMP
+ nsGeolocationContent::WatchPosition(nsIDOMGeoPositionCallback* aCallback,
+                                     nsIDOMGeoPositionErrorCallback* aErrorCallback,
+                                     nsIDOMGeoPositionOptions* aOptions,
+                                     PRInt32* aRetVal)
+ {
+-  return NS_ERROR_NOT_IMPLEMENTED;
++  NS_ENSURE_ARG_POINTER(aCallback);
++
++  PGeolocationRequestChild* request = CreateRequest(aCallback,
++                                                    aErrorCallback,
++                                                    aOptions);
++  request->SendWatchPosition(aRetVal);
++  return NS_OK;
+ }
+ 
+ NS_IMETHODIMP
+ nsGeolocationContent::ClearWatch(PRInt32 aWatchId)
+ {
+-  return NS_ERROR_NOT_IMPLEMENTED;
++  PGeolocationRequestChild* request = CreateRequest(NULL, NULL, NULL);
++  request->SendClearWatch(aWatchId);
++  return NS_OK;
+ }
+diff --git a/dom/src/geolocation/nsGeolocationContent.h b/dom/src/geolocation/nsGeolocationContent.h
+--- a/dom/src/geolocation/nsGeolocationContent.h
++++ b/dom/src/geolocation/nsGeolocationContent.h
+@@ -36,25 +36,41 @@
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ #ifndef nsGeolocationContent_h
+ #define nsGeolocationContent_h
+ 
+ #include "nsGeolocation.h"
+ 
++namespace mozilla {
++namespace dom {
++class PIFrameEmbeddingChild;
++class PGeolocationRequestChild;
++}
++}
++
+ /**
+  * Proxy class for geolocation so operations are performed in the chrome process
+  */ 
+ class nsGeolocationContent : public nsGeolocation
+ {
+  public:
+   NS_DECL_ISUPPORTS
+   NS_DECL_NSIDOMGEOGEOLOCATION
+ 
+-  nsGeolocationContent();
++  nsGeolocationContent(mozilla::dom::PIFrameEmbeddingChild* aTabChild);
++
++  void RemoveRequest(mozilla::dom::PGeolocationRequestChild* aActor);
+ 
+  private:
++  mozilla::dom::PGeolocationRequestChild*
++  CreateRequest(nsIDOMGeoPositionCallback* aCallback,
++                nsIDOMGeoPositionErrorCallback* aErrorCallback,
++                nsIDOMGeoPositionOptions* aOptions);
+ 
+   ~nsGeolocationContent();
++
++  mozilla::dom::PIFrameEmbeddingChild* mTabChild;
++  nsTArray<mozilla::dom::PGeolocationRequestChild*> mRequests;
+ };
+ 
+ #endif // nsGeolocationContent_h
+diff --git a/embedding/browser/webBrowser/nsDocShellTreeOwner.h b/embedding/browser/webBrowser/nsDocShellTreeOwner.h
+--- a/embedding/browser/webBrowser/nsDocShellTreeOwner.h
++++ b/embedding/browser/webBrowser/nsDocShellTreeOwner.h
+@@ -97,16 +97,17 @@ class nsDocShellTreeOwner : public nsIDo
+                             public nsIInterfaceRequestor,
+                             public nsIWebProgressListener,
+                             public nsIDOMEventListener,
+                             public nsICDocShellTreeOwner,
+                             public nsSupportsWeakReference
+ {
+ friend class nsWebBrowser;
+ friend class nsCommandHandler;
++friend class nsNavigator;
+ 
+ public:
+     NS_DECL_ISUPPORTS
+ 
+     NS_DECL_NSIBASEWINDOW
+     NS_DECL_NSIDOCSHELLTREEOWNER
+     NS_DECL_NSIDOMEVENTLISTENER
+     NS_DECL_NSIINTERFACEREQUESTOR
+diff --git a/ipc/ipdl/Makefile.in b/ipc/ipdl/Makefile.in
+--- a/ipc/ipdl/Makefile.in
++++ b/ipc/ipdl/Makefile.in
+@@ -49,16 +49,17 @@ LIBRARY_NAME = mozipdlgen_s
+ FORCE_STATIC_LIB = 1
+ LIBXUL_LIBRARY = 1
+ EXPORT_LIBRARY = 1
+ 
+ ##-----------------------------------------------------------------------------
+ ## When you add IPDL files to a source directory, list the directory here.
+ ##
+ IPDLDIRS =  \
++  dom/src/geolocation \
+   dom/plugins  \
+   dom/ipc  \
+   netwerk/ipc  \
+   netwerk/protocol/http/src  \
+   netwerk/cookie/src  \
+   ipc/ipdl/test/cxx  \
+   ipc/testshell  \
+   js/src/ipc  \
+diff --git a/layout/build/nsLayoutModule.cpp b/layout/build/nsLayoutModule.cpp
+--- a/layout/build/nsLayoutModule.cpp
++++ b/layout/build/nsLayoutModule.cpp
+@@ -267,16 +267,17 @@ static void Shutdown();
+ #include "nsIXMLContentBuilder.h"
+ #endif
+ 
+ #include "nsGeolocationChrome.h"
+ #include "nsCSPService.h"
+ 
+ #ifdef MOZ_IPC
+ #include "nsGeolocationContent.h"
++#include "DOMGeoPosition.h"
+ #include "nsXULAppAPI.h"
+ #endif
+ 
+ // Transformiix
+ /* {0C351177-0159-4500-86B0-A219DFDE4258} */
+ #define TRANSFORMIIX_XPATH1_SCHEME_CID \
+ { 0xc351177, 0x159, 0x4500, { 0x86, 0xb0, 0xa2, 0x19, 0xdf, 0xde, 0x42, 0x58 } }
+ 
+@@ -842,32 +843,40 @@ CreateWindowControllerWithSingletonComma
+ }
+ 
+ NS_GENERIC_FACTORY_CONSTRUCTOR(nsDOMScriptObjectFactory)
+ NS_GENERIC_FACTORY_CONSTRUCTOR(nsBaseDOMException)
+ 
+ #define NS_GEOLOCATION_CID \
+   { 0x1E1C3FF, 0x94A, 0xD048, { 0x44, 0xB4, 0x62, 0xD2, 0x9C, 0x7B, 0x4F, 0x39 } }
+ 
++NS_GENERIC_FACTORY_CONSTRUCTOR(DOMGeoPosition)
++NS_GENERIC_FACTORY_CONSTRUCTOR(DOMGeoPositionAddress)
++NS_GENERIC_FACTORY_CONSTRUCTOR(DOMGeoPositionCoords)
++NS_GENERIC_FACTORY_CONSTRUCTOR(DOMGeoPositionOptions)
++
++NS_DECL_CLASSINFO(DOMGeolocationClassInfo)
++
+ static NS_METHOD
+ nsGeolocationConstructor(nsISupports *aOuter, REFNSIID aIID,
+                          void **aResult)
+ {
+   nsresult rv;
+   nsGeolocation* inst;
+ 
+   *aResult = NULL;
+   if (NULL != aOuter) {
+     rv = NS_ERROR_NO_AGGREGATION;
+     return rv;
+   }
+ 
+ #ifdef MOZ_IPC
+-  if (XRE_GetProcessType() == GeckoProcessType_Content)
+-    NS_NEWXPCOM(inst, nsGeolocationContent);
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    NS_NOTREACHED("Can't allocate a content geolocation object automatically.");
++  }
+   else
+ #endif
+   NS_NEWXPCOM(inst, nsGeolocationChrome);
+   if (NULL == inst) {
+     rv = NS_ERROR_OUT_OF_MEMORY;
+     return rv;
+   }
+   NS_ADDREF(inst);
+@@ -1542,16 +1551,48 @@ static const nsModuleComponentInfo gComp
+       "@mozilla.org/geolocation/service;1",
+       nsGeolocationServiceConstructor },
+ 
+     { "Geolocation",
+       NS_GEOLOCATION_CID,
+       "@mozilla.org/geolocation;1",
+       nsGeolocationConstructor },
+ 
++    { "Geolocation Position Options",
++      {}, nsnull, DOMGeoPositionOptionsConstructor,
++      nsnull, nsnull, nsnull,
++      NS_CI_INTERFACE_GETTER_NAME(DOMGeolocationClassInfo),
++      nsnull,
++      &NS_CLASSINFO_NAME(DOMGeolocationClassInfo),
++      nsIClassInfo::DOM_OBJECT },
++  
++    { "Geolocation Position",
++      {}, nsnull, DOMGeoPositionConstructor,
++      nsnull, nsnull, nsnull,
++      NS_CI_INTERFACE_GETTER_NAME(DOMGeolocationClassInfo),
++      nsnull,
++      &NS_CLASSINFO_NAME(DOMGeolocationClassInfo),
++      nsIClassInfo::DOM_OBJECT },
++
++    { "Geolocation Position Coords",
++      {}, nsnull, DOMGeoPositionCoordsConstructor,
++      nsnull, nsnull, nsnull,
++      NS_CI_INTERFACE_GETTER_NAME(DOMGeolocationClassInfo),
++      nsnull,
++      &NS_CLASSINFO_NAME(DOMGeolocationClassInfo),
++      nsIClassInfo::DOM_OBJECT },
++
++    { "Geolocation Position Address",
++      {}, nsnull, DOMGeoPositionAddressConstructor,
++      nsnull, nsnull, nsnull,
++      NS_CI_INTERFACE_GETTER_NAME(DOMGeolocationClassInfo),
++      nsnull,
++      &NS_CLASSINFO_NAME(DOMGeolocationClassInfo),
++      nsIClassInfo::DOM_OBJECT },
++  
+     { "Focus Manager",
+       NS_FOCUSMANAGER_CID,
+       "@mozilla.org/focus-manager;1",
+       CreateFocusManager },
+ 
+     { "Content Security Policy Service",
+       CSPSERVICE_CID,
+       CSPSERVICE_CONTRACTID,

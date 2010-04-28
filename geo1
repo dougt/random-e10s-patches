@@ -1,0 +1,1315 @@
+# HG changeset patch
+# User Josh Matthews <josh@joshmatthews.net>
+# Date 1270461460 -43200
+# Node ID 75b8b2c4ba7314afc36446cb16955881b503beb2
+# Parent  44f06cf9dd7e3636f54b32e9d836c0fd12359af2
+Split nsGeolocation into chrome and content objects.
+
+diff --git a/dom/base/nsGlobalWindow.cpp b/dom/base/nsGlobalWindow.cpp
+--- a/dom/base/nsGlobalWindow.cpp
++++ b/dom/base/nsGlobalWindow.cpp
+@@ -40,16 +40,21 @@
+  * use your version of this file under the terms of the MPL, indicate your
+  * decision by deleting the provisions above and replace them with the notice
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
++#ifdef MOZ_IPC
++#include "nsGeolocationContent.h"
++#include "nsXULAppAPI.h"
++#endif
++
+ // Local Includes
+ #include "nsGlobalWindow.h"
+ #include "nsScreen.h"
+ #include "nsHistory.h"
+ #include "nsBarProps.h"
+ #include "nsDOMStorage.h"
+ #include "nsDOMOfflineResourceList.h"
+ #include "nsDOMError.h"
+@@ -68,17 +73,17 @@
+ #include "nsIEventListenerManager.h"
+ #include "nsEscape.h"
+ #include "nsStyleCoord.h"
+ #include "nsMimeTypeArray.h"
+ #include "nsNetUtil.h"
+ #include "nsICachingChannel.h"
+ #include "nsPluginArray.h"
+ #include "nsIPluginHost.h"
+-#include "nsGeolocation.h"
++#include "nsGeolocationChrome.h"
+ #include "nsContentCID.h"
+ #include "nsLayoutStatics.h"
+ #include "nsCycleCollector.h"
+ #include "nsCCUncollectableMarker.h"
+ #include "nsDOMThreadService.h"
+ #include "nsAutoJSValHolder.h"
+ 
+ // Interfaces Needed
+@@ -10314,18 +10319,24 @@ NS_IMETHODIMP nsNavigator::GetGeolocatio
+   }
+ 
+   if (!mDocShell)
+     return NS_ERROR_FAILURE;
+ 
+   nsCOMPtr<nsIDOMWindow> contentDOMWindow(do_GetInterface(mDocShell));
+   if (!contentDOMWindow)
+     return NS_ERROR_FAILURE;
+-    
+-  mGeolocation = new nsGeolocation();
++
++#ifdef MOZ_IPC
++  if (XRE_GetProcessType() == GeckoProcessType_Content)
++    mGeolocation = new nsGeolocationContent();
++  else
++#endif
++    mGeolocation = new nsGeolocationChrome();
++  
+   if (!mGeolocation)
+     return NS_ERROR_FAILURE;
+   
+   if (NS_FAILED(mGeolocation->Init(contentDOMWindow)))
+     return NS_ERROR_FAILURE;
+   
+   NS_ADDREF(*_retval = mGeolocation);    
+   return NS_OK; 
+diff --git a/dom/src/geolocation/Makefile.in b/dom/src/geolocation/Makefile.in
+--- a/dom/src/geolocation/Makefile.in
++++ b/dom/src/geolocation/Makefile.in
+@@ -46,18 +46,24 @@ LIBRARY_NAME   = jsdomgeolocation_s
+ LIBXUL_LIBRARY = 1
+ 
+ # we don't want the shared lib, but we want to force the creation of a static lib.
+ FORCE_STATIC_LIB = 1
+ 
+ 
+ CPPSRCS		= \
+ 		nsGeolocation.cpp \
++		nsGeolocationChrome.cpp \
+ 		$(NULL)
+ 
++ifdef MOZ_IPC
++CPPSRCS += 	nsGeolocationContent.cpp \
++		$(NULL)
++endif
++
+ EXTRA_DSO_LDOPTS = \
+ 		$(MOZ_COMPONENT_LIBS) \
+ 		$(NULL)
+ 
+ LOCAL_INCLUDES = \
+ 		-I$(topsrcdir)/dom/base \
+ 		$(NULL)
+ 
+diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolocation.cpp
+--- a/dom/src/geolocation/nsGeolocation.cpp
++++ b/dom/src/geolocation/nsGeolocation.cpp
+@@ -30,16 +30,17 @@
+  * decision by deleting the provisions above and replace them with the notice
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ #include "nsGeolocation.h"
++#include "nsGeolocationChrome.h"
+ #include "nsAutoPtr.h"
+ #include "nsCOMPtr.h"
+ #include "nsIDOMWindow.h"
+ #include "nsDOMClassInfo.h"
+ #include "nsComponentManagerUtils.h"
+ #include "nsICategoryManager.h"
+ #include "nsISupportsPrimitives.h"
+ #include "nsServiceManagerUtils.h"
+@@ -59,20 +60,16 @@
+ 
+ #ifdef MOZ_PLATFORM_MAEMO
+ #include "MaemoLocationProvider.h"
+ #endif
+ 
+ #include "nsIDOMDocument.h"
+ #include "nsIDocument.h"
+ 
+-// Some limit to the number of get or watch geolocation requests
+-// that a window can make.
+-#define MAX_GEO_REQUESTS_PER_WINDOW  1500
+-
+ ////////////////////////////////////////////////////
+ // nsDOMGeoPositionError
+ ////////////////////////////////////////////////////
+ 
+ class nsDOMGeoPositionError : public nsIDOMGeoPositionError
+ {
+ public:
+   NS_DECL_ISUPPORTS
+@@ -129,17 +126,17 @@ nsDOMGeoPositionError::NotifyCallback(ns
+   // remove the stack
+   JSContext* cx;
+   stack->Pop(&cx);
+ }
+ ////////////////////////////////////////////////////
+ // nsGeolocationRequest
+ ////////////////////////////////////////////////////
+ 
+-nsGeolocationRequest::nsGeolocationRequest(nsGeolocation* aLocator,
++nsGeolocationRequest::nsGeolocationRequest(nsGeolocationChrome* aLocator,
+                                            nsIDOMGeoPositionCallback* aCallback,
+                                            nsIDOMGeoPositionErrorCallback* aErrorCallback,
+                                            nsIDOMGeoPositionOptions* aOptions)
+   : mAllowed(PR_FALSE),
+     mCleared(PR_FALSE),
+     mHasSentData(PR_FALSE),
+     mCallback(aCallback),
+     mErrorCallback(aErrorCallback),
+@@ -347,17 +344,17 @@ NS_INTERFACE_MAP_BEGIN(nsGeolocationServ
+   NS_INTERFACE_MAP_ENTRY(nsIGeolocationUpdate)
+   NS_INTERFACE_MAP_ENTRY(nsIObserver)
+ NS_INTERFACE_MAP_END
+ 
+ NS_IMPL_THREADSAFE_ADDREF(nsGeolocationService)
+ NS_IMPL_THREADSAFE_RELEASE(nsGeolocationService)
+ 
+ 
+-static PRBool sGeoEnabled = PR_TRUE;
++PRBool sGeoEnabled = PR_TRUE;
+ static int
+ GeoEnabledChangedCallback(const char *aPrefName, void *aClosure)
+ {
+   sGeoEnabled = nsContentUtils::GetBoolPref("geo.enabled", PR_TRUE);
+   return 0;
+ }
+ 
+ nsresult nsGeolocationService::Init()
+@@ -670,298 +667,69 @@ nsGeolocationService*
+ nsGeolocationService::GetGeolocationService()
+ {
+   nsGeolocationService* inst = nsGeolocationService::GetInstance();
+   NS_IF_ADDREF(inst);
+   return inst;
+ }
+ 
+ void
+-nsGeolocationService::AddLocator(nsGeolocation* aLocator)
++nsGeolocationService::AddLocator(nsGeolocationChrome* aLocator)
+ {
+   mGeolocators.AppendElement(aLocator);
+ }
+ 
+ void
+-nsGeolocationService::RemoveLocator(nsGeolocation* aLocator)
++nsGeolocationService::RemoveLocator(nsGeolocationChrome* aLocator)
+ {
+   mGeolocators.RemoveElement(aLocator);
+ }
+ 
+ ////////////////////////////////////////////////////
+ // nsGeolocation
+ ////////////////////////////////////////////////////
+ 
++//??
+ DOMCI_DATA(GeoGeolocation, nsGeolocation)
+-
+-NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(nsGeolocation)
+-  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIDOMGeoGeolocation)
+-  NS_INTERFACE_MAP_ENTRY(nsIDOMGeoGeolocation)
+-  NS_DOM_INTERFACE_MAP_ENTRY_CLASSINFO(GeoGeolocation)
+-NS_INTERFACE_MAP_END
+-
+-NS_IMPL_CYCLE_COLLECTING_ADDREF(nsGeolocation)
+-NS_IMPL_CYCLE_COLLECTING_RELEASE(nsGeolocation)
+-NS_IMPL_CYCLE_COLLECTION_CLASS(nsGeolocation)
+-
+-NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(nsGeolocation)
+-  tmp->mPendingCallbacks.Clear();
+-  tmp->mWatchingCallbacks.Clear();
+-NS_IMPL_CYCLE_COLLECTION_UNLINK_END
+-
+-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(nsGeolocation)
+-  PRUint32 i; 
+-  for (i = 0; i < tmp->mPendingCallbacks.Length(); ++i)
+-    NS_IMPL_CYCLE_COLLECTION_TRAVERSE_NSCOMPTR_AMBIGUOUS(mPendingCallbacks[i], nsIGeolocationRequest)
+-
+-  for (i = 0; i < tmp->mWatchingCallbacks.Length(); ++i)
+-    NS_IMPL_CYCLE_COLLECTION_TRAVERSE_NSCOMPTR_AMBIGUOUS(mWatchingCallbacks[i], nsIGeolocationRequest)
+-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
++//??
+ 
+ nsGeolocation::nsGeolocation() 
+-: mUpdateInProgress(PR_FALSE)
+ {
+ }
+ 
+ nsGeolocation::~nsGeolocation()
+ {
+-  if (mService)
+-    Shutdown();
+ }
+ 
+ nsresult
+ nsGeolocation::Init(nsIDOMWindow* aContentDom)
+ {
++  if (!aContentDom)
++    return NS_OK;
++
+   // Remember the window
+-  if (aContentDom) {
+-    nsCOMPtr<nsPIDOMWindow> window = do_QueryInterface(aContentDom);
+-    if (!window)
+-      return NS_ERROR_FAILURE;
++  nsCOMPtr<nsPIDOMWindow> window = do_QueryInterface(aContentDom);
++  if (!window)
++    return NS_ERROR_FAILURE;
+ 
+-    mOwner = do_GetWeakReference(window->GetCurrentInnerWindow());
+-    if (!mOwner)
+-      return NS_ERROR_FAILURE;
++  mOwner = do_GetWeakReference(window->GetCurrentInnerWindow());
++  if (!mOwner)
++    return NS_ERROR_FAILURE;
+ 
+-    // Grab the uri of the document
+-    nsCOMPtr<nsIDOMDocument> domdoc;
+-    aContentDom->GetDocument(getter_AddRefs(domdoc));
+-    nsCOMPtr<nsIDocument> doc = do_QueryInterface(domdoc);
+-    if (!doc)
+-      return NS_ERROR_FAILURE;
++  // Grab the uri of the document
++  nsCOMPtr<nsIDOMDocument> domdoc;
++  aContentDom->GetDocument(getter_AddRefs(domdoc));
++  nsCOMPtr<nsIDocument> doc = do_QueryInterface(domdoc);
++  if (!doc)
++    return NS_ERROR_FAILURE;
+ 
+-    doc->NodePrincipal()->GetURI(getter_AddRefs(mURI));
++  doc->NodePrincipal()->GetURI(getter_AddRefs(mURI));
+     
+-    if (!mURI)
+-      return NS_ERROR_FAILURE;
+-  }
+-
+-  // If no aContentDom was passed into us, we are being used
+-  // by chrome/c++ and have no mOwner, no mURI, and no need
+-  // to prompt.
+-  mService = nsGeolocationService::GetInstance();
+-  if (mService)
+-    mService->AddLocator(this);
++  if (!mURI)
++    return NS_ERROR_FAILURE;
+ 
+   return NS_OK;
+ }
+ 
+-void
+-nsGeolocation::Shutdown()
+-{
+-  // Shutdown and release all callbacks
+-  for (PRUint32 i = 0; i< mPendingCallbacks.Length(); i++)
+-    mPendingCallbacks[i]->Shutdown();
+-  mPendingCallbacks.Clear();
+-
+-  for (PRUint32 i = 0; i< mWatchingCallbacks.Length(); i++)
+-    mWatchingCallbacks[i]->Shutdown();
+-  mWatchingCallbacks.Clear();
+-
+-  if (mService)
+-    mService->RemoveLocator(this);
+-
+-  mService = nsnull;
+-  mURI = nsnull;
+-}
+-
+-PRBool
+-nsGeolocation::HasActiveCallbacks()
+-{
+-  return mWatchingCallbacks.Length() != 0;
+-}
+-
+-void
+-nsGeolocation::RemoveRequest(nsGeolocationRequest* aRequest)
+-{
+-  mPendingCallbacks.RemoveElement(aRequest);
+-
+-  // if it is in the mWatchingCallbacks, we can't do much
+-  // since we passed back the position in the array to who
+-  // ever called WatchPosition() and we do not want to mess
+-  // around with the ordering of the array.  Instead, just
+-  // mark the request as "cleared".
+-
+-  aRequest->MarkCleared();
+-}
+-
+-void
+-nsGeolocation::Update(nsIDOMGeoPosition *aSomewhere)
+-{
+-  // This method calls out to objects which may spin and
+-  // event loop which may add new location objects into
+-  // mPendingCallbacks, and mWatchingCallbacks.  Since this
+-  // function can only be called on the primary thread, we
+-  // can lock this method with a member var.
+-
+-  if (mUpdateInProgress)
+-    return;
+-
+-  mUpdateInProgress = PR_TRUE;
+-
+-  if (!WindowOwnerStillExists())
+-  {
+-    Shutdown();
+-    return;
+-  }
+-
+-  // notify anyone that has been waiting
+-  for (PRUint32 i = 0; i< mPendingCallbacks.Length(); i++)
+-    mPendingCallbacks[i]->SendLocation(aSomewhere);
+-  mPendingCallbacks.Clear();
+-
+-  // notify everyone that is watching
+-  for (PRUint32 i = 0; i< mWatchingCallbacks.Length(); i++)
+-    mWatchingCallbacks[i]->SendLocation(aSomewhere);
+-
+-  mUpdateInProgress = PR_FALSE;
+-}
+-
+-NS_IMETHODIMP
+-nsGeolocation::GetCurrentPosition(nsIDOMGeoPositionCallback *callback,
+-                                  nsIDOMGeoPositionErrorCallback *errorCallback,
+-                                  nsIDOMGeoPositionOptions *options)
+-{
+-  NS_ENSURE_ARG_POINTER(callback);
+-
+-  if (!sGeoEnabled)
+-    return NS_ERROR_NOT_AVAILABLE;
+-
+-  if (mPendingCallbacks.Length() > MAX_GEO_REQUESTS_PER_WINDOW)
+-    return NS_ERROR_NOT_AVAILABLE;
+-
+-  nsRefPtr<nsGeolocationRequest> request = new nsGeolocationRequest(this, callback, errorCallback, options);
+-  if (!request)
+-    return NS_ERROR_OUT_OF_MEMORY;
+-
+-  if (NS_FAILED(request->Init()))
+-    return NS_ERROR_FAILURE; // this as OKAY.  not sure why we wouldn't throw. xxx dft
+-
+-  if (mOwner) {
+-    nsCOMPtr<nsIGeolocationPrompt> prompt = do_GetService(NS_GEOLOCATION_PROMPT_CONTRACTID);
+-    if (prompt == nsnull)
+-      return NS_ERROR_NOT_AVAILABLE;
+-
+-    prompt->Prompt(request);
+-
+-    mPendingCallbacks.AppendElement(request);
+-
+-    return NS_OK;
+-  }
+-
+-  if (!nsContentUtils::IsCallerChrome())
+-    return NS_ERROR_FAILURE;
+-
+-  request->Allow();
+-
+-  mPendingCallbacks.AppendElement(request);
+-
+-  return NS_OK;
+-}
+-
+-NS_IMETHODIMP
+-nsGeolocation::WatchPosition(nsIDOMGeoPositionCallback *callback,
+-                             nsIDOMGeoPositionErrorCallback *errorCallback,
+-                             nsIDOMGeoPositionOptions *options,
+-                             PRInt32 *_retval NS_OUTPARAM)
+-{
+-
+-  NS_ENSURE_ARG_POINTER(callback);
+-
+-  if (!sGeoEnabled)
+-    return NS_ERROR_NOT_AVAILABLE;
+-
+-  if (mPendingCallbacks.Length() > MAX_GEO_REQUESTS_PER_WINDOW)
+-    return NS_ERROR_NOT_AVAILABLE;
+-
+-  nsRefPtr<nsGeolocationRequest> request = new nsGeolocationRequest(this, callback, errorCallback, options);
+-  if (!request)
+-    return NS_ERROR_OUT_OF_MEMORY;
+-
+-  if (NS_FAILED(request->Init()))
+-    return NS_ERROR_FAILURE; // this as OKAY.  not sure why we wouldn't throw. xxx dft
+-
+-  if (mOwner) {
+-    nsCOMPtr<nsIGeolocationPrompt> prompt = do_GetService(NS_GEOLOCATION_PROMPT_CONTRACTID);
+-    if (prompt == nsnull)
+-      return NS_ERROR_NOT_AVAILABLE;
+-
+-    prompt->Prompt(request);
+-
+-    // need to hand back an index/reference.
+-    mWatchingCallbacks.AppendElement(request);
+-    *_retval = mWatchingCallbacks.Length() - 1;
+-
+-    return NS_OK;
+-  }
+-
+-  if (!nsContentUtils::IsCallerChrome())
+-    return NS_ERROR_FAILURE;
+-
+-  request->Allow();
+-
+-  // need to hand back an index/reference.
+-  mWatchingCallbacks.AppendElement(request);
+-  *_retval = mWatchingCallbacks.Length() - 1;
+-
+-  return NS_OK;
+-}
+-
+-NS_IMETHODIMP
+-nsGeolocation::ClearWatch(PRInt32 aWatchId)
+-{
+-  PRUint32 count = mWatchingCallbacks.Length();
+-  if (aWatchId < 0 || count == 0 || PRUint32(aWatchId) > count)
+-    return NS_OK;
+-
+-  mWatchingCallbacks[aWatchId]->MarkCleared();
+-  return NS_OK;
+-}
+-
+-PRBool
+-nsGeolocation::WindowOwnerStillExists()
+-{
+-  // an owner was never set when nsGeolocation
+-  // was created, which means that this object
+-  // is being used without a window.
+-  if (mOwner == nsnull)
+-    return PR_TRUE;
+-
+-  nsCOMPtr<nsPIDOMWindow> window = do_QueryReferent(mOwner);
+-
+-  if (window)
+-  {
+-    PRBool closed = PR_FALSE;
+-    window->GetClosed(&closed);
+-    if (closed)
+-      return PR_FALSE;
+-
+-    nsPIDOMWindow* outer = window->GetOuterWindow();
+-    if (!outer || outer->GetCurrentInnerWindow() != window)
+-      return PR_FALSE;
+-  }
+-
+-  return PR_TRUE;
+-}
+-
+ #ifndef WINCE_WINDOWS_MOBILE
+ DOMCI_DATA(GeoPositionCoords, void)
+ DOMCI_DATA(GeoPosition, void)
+ #endif
+diff --git a/dom/src/geolocation/nsGeolocation.h b/dom/src/geolocation/nsGeolocation.h
+--- a/dom/src/geolocation/nsGeolocation.h
++++ b/dom/src/geolocation/nsGeolocation.h
+@@ -29,16 +29,18 @@
+  * use your version of this file under the terms of the MPL, indicate your
+  * decision by deleting the provisions above and replace them with the notice
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
++#ifndef nsGeolocation_h
++#define nsGeolocation_h
+ 
+ #include "nsCOMPtr.h"
+ #include "nsAutoPtr.h"
+ #include "nsCOMArray.h"
+ #include "nsTArray.h"
+ #include "nsITimer.h"
+ #include "nsIObserver.h"
+ #include "nsIURI.h"
+@@ -55,27 +57,28 @@
+ #include "nsIDOMNavigatorGeolocation.h"
+ 
+ #include "nsPIDOMWindow.h"
+ 
+ #include "nsIGeolocationProvider.h"
+ 
+ class nsGeolocationService;
+ class nsGeolocation;
++class nsGeolocationChrome;
+ 
+ class nsGeolocationRequest : public nsIGeolocationRequest, public nsITimerCallback
+ {
+  public:
+   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+   NS_DECL_NSIGEOLOCATIONREQUEST
+   NS_DECL_NSITIMERCALLBACK
+ 
+   NS_DECL_CYCLE_COLLECTION_CLASS_AMBIGUOUS(nsGeolocationRequest, nsIGeolocationRequest)
+ 
+-  nsGeolocationRequest(nsGeolocation* locator,
++  nsGeolocationRequest(nsGeolocationChrome* locator,
+                        nsIDOMGeoPositionCallback* callback,
+                        nsIDOMGeoPositionErrorCallback* errorCallback,
+                        nsIDOMGeoPositionOptions* options);
+   nsresult Init();
+   void Shutdown();
+ 
+   void SendLocation(nsIDOMGeoPosition* location);
+   void MarkCleared();
+@@ -90,17 +93,17 @@ class nsGeolocationRequest : public nsIG
+   PRPackedBool mCleared;
+   PRPackedBool mHasSentData;
+ 
+   nsCOMPtr<nsITimer> mTimeoutTimer;
+   nsCOMPtr<nsIDOMGeoPositionCallback> mCallback;
+   nsCOMPtr<nsIDOMGeoPositionErrorCallback> mErrorCallback;
+   nsCOMPtr<nsIDOMGeoPositionOptions> mOptions;
+ 
+-  nsRefPtr<nsGeolocation> mLocator;
++  nsRefPtr<nsGeolocationChrome> mLocator;
+ };
+ 
+ /**
+  * Singleton that manages the geolocation provider
+  */
+ class nsGeolocationService : public nsIGeolocationUpdate, public nsIObserver
+ {
+ public:
+@@ -113,18 +116,18 @@ public:
+   NS_DECL_NSIGEOLOCATIONUPDATE
+   NS_DECL_NSIOBSERVER
+ 
+   nsGeolocationService() {mTimeout = 6000;};
+ 
+   nsresult Init();
+ 
+   // Management of the nsGeolocation objects
+-  void AddLocator(nsGeolocation* locator);
+-  void RemoveLocator(nsGeolocation* locator);
++  void AddLocator(nsGeolocationChrome* locator);
++  void RemoveLocator(nsGeolocationChrome* locator);
+ 
+   PRBool IsBetterPosition(nsIDOMGeoPosition* aPosition);
+ 
+   void SetCachedPosition(nsIDOMGeoPosition* aPosition);
+   nsIDOMGeoPosition* GetCachedPosition();
+ 
+   // Returns true if there is at least one geolocation provider.
+   PRBool   HasGeolocationProvider();
+@@ -151,75 +154,45 @@ private:
+   PRInt32 mTimeout;
+ 
+   // The object providing geo location information to us.
+   nsCOMArray<nsIGeolocationProvider> mProviders;
+ 
+   // mGeolocators are not owned here.  Their constructor
+   // adds them to this list, and their destructor removes
+   // them from this list.
+-  nsTArray<nsGeolocation*> mGeolocators;
++  nsTArray<nsGeolocationChrome*> mGeolocators;
+ 
+   // This is the last geo position that we have seen.
+   nsCOMPtr<nsIDOMGeoPosition> mLastPosition;
+ };
+ 
+ 
++
+ /**
+  * Can return a geolocation info
+  */ 
+ class nsGeolocation : public nsIDOMGeoGeolocation
+ {
+-public:
+-
+-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+-  NS_DECL_NSIDOMGEOGEOLOCATION
+-
+-  NS_DECL_CYCLE_COLLECTION_CLASS(nsGeolocation)
+-
++ public:
+   nsGeolocation();
+ 
+-  nsresult Init(nsIDOMWindow* contentDom=nsnull);
++  virtual void Shutdown() {}
+ 
+-  // Called by the geolocation device to notify that a location has changed.
+-  void Update(nsIDOMGeoPosition* aPosition);
+-
+-  // Returns true if any of the callbacks are repeating
+-  PRBool HasActiveCallbacks();
+-
+-  // Remove request from all callbacks arrays
+-  void RemoveRequest(nsGeolocationRequest* request);
+-
+-  // Shutting down.
+-  void Shutdown();
++  virtual nsresult Init(nsIDOMWindow* contentDom=nsnull);
+ 
+   // Getter for the URI that this nsGeolocation was loaded from
+   nsIURI* GetURI() { return mURI; }
+ 
+   // Getter for the window that this nsGeolocation is owned by
+   nsIWeakReference* GetOwner() { return mOwner; }
+ 
+-  // Check to see if the widnow still exists
+-  PRBool WindowOwnerStillExists();
+-
+-private:
+-
+-  ~nsGeolocation();
+-
+-  // Two callback arrays.  The first |mPendingCallbacks| holds objects for only
+-  // one callback and then they are released/removed from the array.  The second
+-  // |mWatchingCallbacks| holds objects until the object is explictly removed or
+-  // there is a page change.
+-
+-  nsTArray<nsRefPtr<nsGeolocationRequest> > mPendingCallbacks;
+-  nsTArray<nsRefPtr<nsGeolocationRequest> > mWatchingCallbacks;
+-
+-  PRBool mUpdateInProgress;
++ protected:
++  virtual ~nsGeolocation();
+ 
+   // window that this was created for.  Weak reference.
+   nsWeakPtr mOwner;
+ 
+   // where the content was loaded from
+   nsCOMPtr<nsIURI> mURI;
++};
+ 
+-  // owning back pointer.
+-  nsRefPtr<nsGeolocationService> mService;
+-};
++#endif // nsGeolocation_h
+diff --git a/dom/src/geolocation/nsGeolocationChrome.cpp b/dom/src/geolocation/nsGeolocationChrome.cpp
+new file mode 100644
+--- /dev/null
++++ b/dom/src/geolocation/nsGeolocationChrome.cpp
+@@ -0,0 +1,299 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is mozilla.org code.
++ *
++ * The Initial Developer of the Original Code is
++ *   the Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Josh Matthews <josh@joshmatthews.net> (Initial Developer)
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#include "nsDOMClassInfo.h"
++#include "nsIDocument.h"
++#include "nsIDOMWindow.h"
++#include "nsGeolocationChrome.h"
++#include "nsServiceManagerUtils.h"
++
++extern PRBool sGeoEnabled;
++
++// Some limit to the number of get or watch geolocation requests
++// that a window can make.
++#define MAX_GEO_REQUESTS_PER_WINDOW  1500
++
++NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(nsGeolocationChrome)
++  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIDOMGeoGeolocation)
++  NS_INTERFACE_MAP_ENTRY(nsIDOMGeoGeolocation)
++  NS_DOM_INTERFACE_MAP_ENTRY_CLASSINFO(GeoGeolocation)
++NS_INTERFACE_MAP_END
++
++NS_IMPL_CYCLE_COLLECTING_ADDREF(nsGeolocationChrome)
++NS_IMPL_CYCLE_COLLECTING_RELEASE(nsGeolocationChrome)
++NS_IMPL_CYCLE_COLLECTION_CLASS(nsGeolocationChrome)
++
++NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(nsGeolocationChrome)
++  tmp->mPendingCallbacks.Clear();
++  tmp->mWatchingCallbacks.Clear();
++NS_IMPL_CYCLE_COLLECTION_UNLINK_END
++
++NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(nsGeolocationChrome)
++  PRUint32 i; 
++  for (i = 0; i < tmp->mPendingCallbacks.Length(); ++i)
++    NS_IMPL_CYCLE_COLLECTION_TRAVERSE_NSCOMPTR_AMBIGUOUS(mPendingCallbacks[i], nsIGeolocationRequest)
++
++  for (i = 0; i < tmp->mWatchingCallbacks.Length(); ++i)
++    NS_IMPL_CYCLE_COLLECTION_TRAVERSE_NSCOMPTR_AMBIGUOUS(mWatchingCallbacks[i], nsIGeolocationRequest)
++NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
++
++nsGeolocationChrome::nsGeolocationChrome() 
++: mUpdateInProgress(PR_FALSE)
++{
++}
++
++nsGeolocationChrome::~nsGeolocationChrome()
++{
++  if (mService)
++    Shutdown();
++}
++
++nsresult
++nsGeolocationChrome::Init(nsIDOMWindow* aContentDom)
++{
++  nsresult rv = nsGeolocation::Init(aContentDom);
++  if (NS_FAILED(rv) || aContentDom)
++    return rv;
++
++  // If no aContentDom was passed into us, we are being used
++  // by chrome/c++ and have no mOwner, no mURI, and no need
++  // to prompt.
++  mService = nsGeolocationService::GetInstance();
++  if (mService)
++    mService->AddLocator(this);
++
++  return NS_OK;
++}
++
++void
++nsGeolocationChrome::Shutdown()
++{
++  // Shutdown and release all callbacks
++  for (PRUint32 i = 0; i< mPendingCallbacks.Length(); i++)
++    mPendingCallbacks[i]->Shutdown();
++  mPendingCallbacks.Clear();
++
++  for (PRUint32 i = 0; i< mWatchingCallbacks.Length(); i++)
++    mWatchingCallbacks[i]->Shutdown();
++  mWatchingCallbacks.Clear();
++
++  if (mService)
++    mService->RemoveLocator(this);
++
++  mService = nsnull;
++  mURI = nsnull;
++}
++
++PRBool
++nsGeolocationChrome::HasActiveCallbacks()
++{
++  return mWatchingCallbacks.Length() != 0;
++}
++
++void
++nsGeolocationChrome::RemoveRequest(nsGeolocationRequest* aRequest)
++{
++  mPendingCallbacks.RemoveElement(aRequest);
++
++  // if it is in the mWatchingCallbacks, we can't do much
++  // since we passed back the position in the array to who
++  // ever called WatchPosition() and we do not want to mess
++  // around with the ordering of the array.  Instead, just
++  // mark the request as "cleared".
++
++  aRequest->MarkCleared();
++}
++
++void
++nsGeolocationChrome::Update(nsIDOMGeoPosition *aSomewhere)
++{
++  // This method calls out to objects which may spin and
++  // event loop which may add new location objects into
++  // mPendingCallbacks, and mWatchingCallbacks.  Since this
++  // function can only be called on the primary thread, we
++  // can lock this method with a member var.
++
++  if (mUpdateInProgress)
++    return;
++
++  mUpdateInProgress = PR_TRUE;
++
++  if (!WindowOwnerStillExists())
++  {
++    Shutdown();
++    return;
++  }
++
++  // notify anyone that has been waiting
++  for (PRUint32 i = 0; i< mPendingCallbacks.Length(); i++)
++    mPendingCallbacks[i]->SendLocation(aSomewhere);
++  mPendingCallbacks.Clear();
++
++  // notify everyone that is watching
++  for (PRUint32 i = 0; i< mWatchingCallbacks.Length(); i++)
++    mWatchingCallbacks[i]->SendLocation(aSomewhere);
++
++  mUpdateInProgress = PR_FALSE;
++}
++
++NS_IMETHODIMP
++nsGeolocationChrome::GetCurrentPosition(nsIDOMGeoPositionCallback *callback,
++                                        nsIDOMGeoPositionErrorCallback *errorCallback,
++                                        nsIDOMGeoPositionOptions *options)
++{
++  NS_ENSURE_ARG_POINTER(callback);
++
++  if (!sGeoEnabled)
++    return NS_ERROR_NOT_AVAILABLE;
++
++  if (mPendingCallbacks.Length() > MAX_GEO_REQUESTS_PER_WINDOW)
++    return NS_ERROR_NOT_AVAILABLE;
++
++  nsRefPtr<nsGeolocationRequest> request = new nsGeolocationRequest(this, callback, errorCallback, options);
++  if (!request)
++    return NS_ERROR_OUT_OF_MEMORY;
++
++  if (NS_FAILED(request->Init()))
++    return NS_ERROR_FAILURE; // this as OKAY.  not sure why we wouldn't throw. xxx dft
++
++  if (mOwner) {
++    nsCOMPtr<nsIGeolocationPrompt> prompt = do_GetService(NS_GEOLOCATION_PROMPT_CONTRACTID);
++    if (prompt == nsnull)
++      return NS_ERROR_NOT_AVAILABLE;
++
++    prompt->Prompt(request);
++
++    mPendingCallbacks.AppendElement(request);
++
++    return NS_OK;
++  }
++
++  if (!nsContentUtils::IsCallerChrome())
++    return NS_ERROR_FAILURE;
++
++  request->Allow();
++
++  mPendingCallbacks.AppendElement(request);
++
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++nsGeolocationChrome::WatchPosition(nsIDOMGeoPositionCallback *callback,
++                             nsIDOMGeoPositionErrorCallback *errorCallback,
++                             nsIDOMGeoPositionOptions *options,
++                             PRInt32 *_retval NS_OUTPARAM)
++{
++
++  NS_ENSURE_ARG_POINTER(callback);
++
++  if (!sGeoEnabled)
++    return NS_ERROR_NOT_AVAILABLE;
++
++  if (mPendingCallbacks.Length() > MAX_GEO_REQUESTS_PER_WINDOW)
++    return NS_ERROR_NOT_AVAILABLE;
++
++  nsRefPtr<nsGeolocationRequest> request = new nsGeolocationRequest(this, callback, errorCallback, options);
++  if (!request)
++    return NS_ERROR_OUT_OF_MEMORY;
++
++  if (NS_FAILED(request->Init()))
++    return NS_ERROR_FAILURE; // this as OKAY.  not sure why we wouldn't throw. xxx dft
++
++  if (mOwner) {
++    nsCOMPtr<nsIGeolocationPrompt> prompt = do_GetService(NS_GEOLOCATION_PROMPT_CONTRACTID);
++    if (prompt == nsnull)
++      return NS_ERROR_NOT_AVAILABLE;
++
++    prompt->Prompt(request);
++
++    // need to hand back an index/reference.
++    mWatchingCallbacks.AppendElement(request);
++    *_retval = mWatchingCallbacks.Length() - 1;
++
++    return NS_OK;
++  }
++
++  if (!nsContentUtils::IsCallerChrome())
++    return NS_ERROR_FAILURE;
++
++  request->Allow();
++
++  // need to hand back an index/reference.
++  mWatchingCallbacks.AppendElement(request);
++  *_retval = mWatchingCallbacks.Length() - 1;
++
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++nsGeolocationChrome::ClearWatch(PRInt32 aWatchId)
++{
++  PRUint32 count = mWatchingCallbacks.Length();
++  if (aWatchId < 0 || count == 0 || PRUint32(aWatchId) > count)
++    return NS_OK;
++
++  mWatchingCallbacks[aWatchId]->MarkCleared();
++  return NS_OK;
++}
++
++PRBool
++nsGeolocationChrome::WindowOwnerStillExists()
++{
++  // an owner was never set when nsGeolocationChrome
++  // was created, which means that this object
++  // is being used without a window.
++  if (mOwner == nsnull)
++    return PR_TRUE;
++
++  nsCOMPtr<nsPIDOMWindow> window = do_QueryReferent(mOwner);
++
++  if (window)
++  {
++    PRBool closed = PR_FALSE;
++    window->GetClosed(&closed);
++    if (closed)
++      return PR_FALSE;
++
++    nsPIDOMWindow* outer = window->GetOuterWindow();
++    if (!outer || outer->GetCurrentInnerWindow() != window)
++      return PR_FALSE;
++  }
++
++  return PR_TRUE;
++}
+diff --git a/dom/src/geolocation/nsGeolocationChrome.h b/dom/src/geolocation/nsGeolocationChrome.h
+new file mode 100644
+--- /dev/null
++++ b/dom/src/geolocation/nsGeolocationChrome.h
+@@ -0,0 +1,94 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is mozilla.org code.
++ *
++ * The Initial Developer of the Original Code is
++ *   the Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Josh Matthews <josh@joshmatthews.net> (Initial Developer)
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#ifndef nsGeolocationChrome_h
++#define nsGeolocationChrome_h
++
++#include "nsGeolocation.h"
++
++/**
++ * Can return a geolocation info
++ */ 
++class nsGeolocationChrome : public nsGeolocation
++{
++ public:
++  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
++  NS_DECL_NSIDOMGEOGEOLOCATION
++
++  NS_DECL_CYCLE_COLLECTION_CLASS(nsGeolocationChrome)
++
++  nsGeolocationChrome();
++
++  NS_OVERRIDE
++  nsresult Init(nsIDOMWindow* contentDom=nsnull);
++
++  // Called by the geolocation device to notify that a location has changed.
++  void Update(nsIDOMGeoPosition* aPosition);
++
++  // Returns true if any of the callbacks are repeating
++  PRBool HasActiveCallbacks();
++
++  // Remove request from all callbacks arrays
++  void RemoveRequest(nsGeolocationRequest* request);
++
++  // Shutting down.
++  NS_OVERRIDE
++  void Shutdown();
++
++  // Check to see if the widnow still exists
++  PRBool WindowOwnerStillExists();
++
++ private:
++
++  ~nsGeolocationChrome();
++
++  // Two callback arrays.  The first |mPendingCallbacks| holds objects for only
++  // one callback and then they are released/removed from the array.  The second
++  // |mWatchingCallbacks| holds objects until the object is explictly removed or
++  // there is a page change.
++
++  nsTArray<nsRefPtr<nsGeolocationRequest> > mPendingCallbacks;
++  nsTArray<nsRefPtr<nsGeolocationRequest> > mWatchingCallbacks;
++
++  PRBool mUpdateInProgress;
++
++  // owning back pointer.
++  nsRefPtr<nsGeolocationService> mService;
++};
++
++#endif // nsGeolocationChrome_h
+diff --git a/dom/src/geolocation/nsGeolocationContent.cpp b/dom/src/geolocation/nsGeolocationContent.cpp
+new file mode 100644
+--- /dev/null
++++ b/dom/src/geolocation/nsGeolocationContent.cpp
+@@ -0,0 +1,80 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is mozilla.org code.
++ *
++ * The Initial Developer of the Original Code is
++ *   the Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Josh Matthews <josh@joshmatthews.net> (Initial Developer)
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#include "nsDOMClassInfo.h"
++#include "nsGeolocationContent.h"
++
++NS_INTERFACE_MAP_BEGIN(nsGeolocationContent)
++  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIDOMGeoGeolocation)
++  NS_INTERFACE_MAP_ENTRY(nsIDOMGeoGeolocation)
++  NS_DOM_INTERFACE_MAP_ENTRY_CLASSINFO(GeoGeolocation)
++NS_INTERFACE_MAP_END
++
++NS_IMPL_ADDREF(nsGeolocationContent)
++NS_IMPL_RELEASE(nsGeolocationContent)
++
++nsGeolocationContent::nsGeolocationContent()
++{
++}
++
++nsGeolocationContent::~nsGeolocationContent()
++{
++}
++
++NS_IMETHODIMP
++nsGeolocationContent::GetCurrentPosition(nsIDOMGeoPositionCallback* aCallback,
++                                         nsIDOMGeoPositionErrorCallback* aErrorCallback,
++                                         nsIDOMGeoPositionOptions* aOptions)
++{
++  return NS_ERROR_NOT_IMPLEMENTED;
++}
++
++NS_IMETHODIMP
++nsGeolocationContent::WatchPosition(nsIDOMGeoPositionCallback* aCallback,
++                                    nsIDOMGeoPositionErrorCallback* aErrorCallback,
++                                    nsIDOMGeoPositionOptions* aOptions,
++                                    PRInt32* aRetVal)
++{
++  return NS_ERROR_NOT_IMPLEMENTED;
++}
++
++NS_IMETHODIMP
++nsGeolocationContent::ClearWatch(PRInt32 aWatchId)
++{
++  return NS_ERROR_NOT_IMPLEMENTED;
++}
+diff --git a/dom/src/geolocation/nsGeolocationContent.h b/dom/src/geolocation/nsGeolocationContent.h
+new file mode 100644
+--- /dev/null
++++ b/dom/src/geolocation/nsGeolocationContent.h
+@@ -0,0 +1,60 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is mozilla.org code.
++ *
++ * The Initial Developer of the Original Code is
++ *   the Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Josh Matthews <josh@joshmatthews.net> (Initial Developer)
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#ifndef nsGeolocationContent_h
++#define nsGeolocationContent_h
++
++#include "nsGeolocation.h"
++
++/**
++ * Proxy class for geolocation so operations are performed in the chrome process
++ */ 
++class nsGeolocationContent : public nsGeolocation
++{
++ public:
++  NS_DECL_ISUPPORTS
++  NS_DECL_NSIDOMGEOGEOLOCATION
++
++  nsGeolocationContent();
++
++ private:
++
++  ~nsGeolocationContent();
++};
++
++#endif // nsGeolocationContent_h
+diff --git a/layout/build/nsLayoutModule.cpp b/layout/build/nsLayoutModule.cpp
+--- a/layout/build/nsLayoutModule.cpp
++++ b/layout/build/nsLayoutModule.cpp
+@@ -262,19 +262,24 @@ NS_NewXULTreeBuilder(nsISupports* aOuter
+ static nsresult Initialize(nsIModule* aSelf);
+ static void Shutdown();
+ 
+ #ifdef MOZ_XTF
+ #include "nsIXTFService.h"
+ #include "nsIXMLContentBuilder.h"
+ #endif
+ 
+-#include "nsGeolocation.h"
++#include "nsGeolocationChrome.h"
+ #include "nsCSPService.h"
+ 
++#ifdef MOZ_IPC
++#include "nsGeolocationContent.h"
++#include "nsXULAppAPI.h"
++#endif
++
+ // Transformiix
+ /* {0C351177-0159-4500-86B0-A219DFDE4258} */
+ #define TRANSFORMIIX_XPATH1_SCHEME_CID \
+ { 0xc351177, 0x159, 0x4500, { 0x86, 0xb0, 0xa2, 0x19, 0xdf, 0xde, 0x42, 0x58 } }
+ 
+ /* 5d5d92cd-6bf8-11d9-bf4a-000a95dc234c */
+ #define TRANSFORMIIX_NODESET_CID \
+ { 0x5d5d92cd, 0x6bf8, 0x11d9, { 0xbf, 0x4a, 0x0, 0x0a, 0x95, 0xdc, 0x23, 0x4c } }
+@@ -837,17 +842,47 @@ CreateWindowControllerWithSingletonComma
+ }
+ 
+ NS_GENERIC_FACTORY_CONSTRUCTOR(nsDOMScriptObjectFactory)
+ NS_GENERIC_FACTORY_CONSTRUCTOR(nsBaseDOMException)
+ 
+ #define NS_GEOLOCATION_CID \
+   { 0x1E1C3FF, 0x94A, 0xD048, { 0x44, 0xB4, 0x62, 0xD2, 0x9C, 0x7B, 0x4F, 0x39 } }
+ 
+-NS_GENERIC_FACTORY_CONSTRUCTOR_INIT(nsGeolocation, Init)
++static NS_METHOD
++nsGeolocationConstructor(nsISupports *aOuter, REFNSIID aIID,
++                         void **aResult)
++{
++  nsresult rv;
++  nsGeolocation* inst;
++
++  *aResult = NULL;
++  if (NULL != aOuter) {
++    rv = NS_ERROR_NO_AGGREGATION;
++    return rv;
++  }
++
++#ifdef MOZ_IPC
++  if (XRE_GetProcessType() == GeckoProcessType_Content)
++    NS_NEWXPCOM(inst, nsGeolocationContent);
++  else
++#endif
++  NS_NEWXPCOM(inst, nsGeolocationChrome);
++  if (NULL == inst) {
++    rv = NS_ERROR_OUT_OF_MEMORY;
++    return rv;
++  }
++  NS_ADDREF(inst);
++  rv = inst->Init();
++  if(NS_SUCCEEDED(rv)) {
++    rv = inst->QueryInterface(aIID, aResult);
++  }
++  NS_RELEASE(inst);
++  return rv;
++}
+ 
+ #define NS_GEOLOCATION_SERVICE_CID \
+   { 0x404d02a, 0x1CA, 0xAAAB, { 0x47, 0x62, 0x94, 0x4b, 0x1b, 0xf2, 0xf7, 0xb5 } }
+ 
+ NS_GENERIC_FACTORY_SINGLETON_CONSTRUCTOR(nsGeolocationService, nsGeolocationService::GetGeolocationService)
+ 
+ static NS_METHOD
+ CSPServiceRegistration(nsIComponentManager *aCompMgr,
