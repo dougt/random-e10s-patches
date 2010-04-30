@@ -71,7 +71,7 @@ diff --git a/dom/base/nsGlobalWindow.cpp b/dom/base/nsGlobalWindow.cpp
  
  #ifdef NS_PRINTING
  #include "nsIPrintSettings.h"
-@@ -10430,19 +10432,32 @@ NS_IMETHODIMP nsNavigator::GetGeolocatio
+@@ -10431,19 +10433,32 @@ NS_IMETHODIMP nsNavigator::GetGeolocatio
    if (!mDocShell)
      return NS_ERROR_FAILURE;
  
@@ -2384,7 +2384,7 @@ diff --git a/ipc/ipdl/Makefile.in b/ipc/ipdl/Makefile.in
 diff --git a/layout/build/nsLayoutModule.cpp b/layout/build/nsLayoutModule.cpp
 --- a/layout/build/nsLayoutModule.cpp
 +++ b/layout/build/nsLayoutModule.cpp
-@@ -267,16 +267,17 @@ static void Shutdown();
+@@ -268,16 +268,17 @@ static void Shutdown();
  #include "nsIXMLContentBuilder.h"
  #endif
  
@@ -2402,7 +2402,7 @@ diff --git a/layout/build/nsLayoutModule.cpp b/layout/build/nsLayoutModule.cpp
  #define TRANSFORMIIX_XPATH1_SCHEME_CID \
  { 0xc351177, 0x159, 0x4500, { 0x86, 0xb0, 0xa2, 0x19, 0xdf, 0xde, 0x42, 0x58 } }
  
-@@ -842,32 +843,40 @@ CreateWindowControllerWithSingletonComma
+@@ -845,32 +846,40 @@ CreateWindowControllerWithSingletonComma
  }
  
  NS_GENERIC_FACTORY_CONSTRUCTOR(nsDOMScriptObjectFactory)
@@ -2445,7 +2445,7 @@ diff --git a/layout/build/nsLayoutModule.cpp b/layout/build/nsLayoutModule.cpp
      return rv;
    }
    NS_ADDREF(inst);
-@@ -1542,16 +1551,48 @@ static const nsModuleComponentInfo gComp
+@@ -1545,16 +1554,48 @@ static const nsModuleComponentInfo gComp
        "@mozilla.org/geolocation/service;1",
        nsGeolocationServiceConstructor },
  
@@ -2491,6 +2491,6 @@ diff --git a/layout/build/nsLayoutModule.cpp b/layout/build/nsLayoutModule.cpp
        "@mozilla.org/focus-manager;1",
        CreateFocusManager },
  
-     { "Content Security Policy Service",
-       CSPSERVICE_CID,
-       CSPSERVICE_CONTRACTID,
+     { "Content Utils",
+       NS_ICONTENTUTILS_CID,
+       "@mozilla.org/content/contentutils;1",
