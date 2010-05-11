@@ -330,7 +330,7 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
  #include "nsThreadUtils.h"
  #include "nsChromeRegistryChrome.h"
  
-@@ -71,16 +74,21 @@ ContentProcessParent::GetSingleton()
+@@ -71,16 +74,21 @@ ContentProcessParent::GetSingleton(PRBoo
          nsRefPtr<ContentProcessParent> parent = new ContentProcessParent();
          if (parent) {
              nsCOMPtr<nsIObserverService> obs =
@@ -345,14 +345,14 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
 +                        prefs->AddObserver("", parent, PR_FALSE);
 +                    }
                  }
-                 obs->AddObserver(parent,
-                                  NS_E10S_IOSERVICE_SET_OFFLINE_TOPIC,
-                                  PR_FALSE); 
+                 obs->AddObserver(
+                   parent, NS_IPC_IOSERVICE_SET_OFFLINE_TOPIC, PR_FALSE); 
              }
              nsCOMPtr<nsIThreadInternal>
                  threadInt(do_QueryInterface(NS_GetCurrentThread()));
              if (threadInt) {
-@@ -156,16 +164,155 @@ ContentProcessParent::~ContentProcessPar
+                 threadInt->GetObserver(getter_AddRefs(parent->mOldObserver));
+@@ -155,16 +163,155 @@ ContentProcessParent::~ContentProcessPar
  }
  
  bool
@@ -508,7 +508,7 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
  void
  DeleteSubprocess(GeckoChildProcessHost* aSubprocess)
  {
-@@ -174,28 +321,48 @@ DeleteSubprocess(GeckoChildProcessHost* 
+@@ -173,28 +320,48 @@ DeleteSubprocess(GeckoChildProcessHost* 
  }
  
  NS_IMETHODIMP
@@ -533,7 +533,7 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
          mSubprocess = nsnull;
      }
  
-     if (!strcmp(aTopic, NS_E10S_IOSERVICE_SET_OFFLINE_TOPIC) && mSubprocess) {
+     if (!strcmp(aTopic, NS_IPC_IOSERVICE_SET_OFFLINE_TOPIC) && mSubprocess) {
        NS_ConvertUTF16toUTF8 dataStr(aData);
        const char *offline = dataStr.get();
        SendSetOffline(!strcmp(offline, "true") ? true : false);
@@ -745,7 +745,7 @@ diff --git a/modules/libpref/src/nsPrefBranch.cpp b/modules/libpref/src/nsPrefBr
  #include "nsIDirectoryService.h"
  #include "nsString.h"
  #include "nsReadableUtils.h"
-@@ -136,29 +139,64 @@ NS_IMETHODIMP nsPrefBranch::GetRoot(char
+@@ -137,29 +140,64 @@ NS_IMETHODIMP nsPrefBranch::GetRoot(char
    return NS_OK;
  }
  
@@ -810,7 +810,7 @@ diff --git a/modules/libpref/src/nsPrefBranch.cpp b/modules/libpref/src/nsPrefBr
  }
  
  NS_IMETHODIMP nsPrefBranch::SetBoolPref(const char *aPrefName, PRInt32 aValue)
-@@ -173,16 +211,38 @@ NS_IMETHODIMP nsPrefBranch::SetBoolPref(
+@@ -174,16 +212,38 @@ NS_IMETHODIMP nsPrefBranch::SetBoolPref(
    return rv;
  }
  
@@ -849,7 +849,7 @@ diff --git a/modules/libpref/src/nsPrefBranch.cpp b/modules/libpref/src/nsPrefBr
  }
  
  NS_IMETHODIMP nsPrefBranch::SetCharPref(const char *aPrefName, const char *aValue)
-@@ -198,16 +258,35 @@ NS_IMETHODIMP nsPrefBranch::SetCharPref(
+@@ -199,16 +259,35 @@ NS_IMETHODIMP nsPrefBranch::SetCharPref(
    return rv;
  }
  
@@ -885,7 +885,7 @@ diff --git a/modules/libpref/src/nsPrefBranch.cpp b/modules/libpref/src/nsPrefBr
  }
  
  NS_IMETHODIMP nsPrefBranch::SetIntPref(const char *aPrefName, PRInt32 aValue)
-@@ -238,17 +317,20 @@ NS_IMETHODIMP nsPrefBranch::GetComplexVa
+@@ -239,17 +318,20 @@ NS_IMETHODIMP nsPrefBranch::GetComplexVa
        rv = getValidatedPrefName(aPrefName, &pref);
        if (NS_FAILED(rv))
          return rv;
@@ -907,7 +907,7 @@ diff --git a/modules/libpref/src/nsPrefBranch.cpp b/modules/libpref/src/nsPrefBr
        // value we pulled in at the top of this function
        if (bNeedDefault) {
          nsXPIDLString utf16String;
-@@ -449,16 +531,35 @@ NS_IMETHODIMP nsPrefBranch::ClearUserPre
+@@ -450,16 +532,35 @@ NS_IMETHODIMP nsPrefBranch::ClearUserPre
  
  NS_IMETHODIMP nsPrefBranch::PrefHasUserValue(const char *aPrefName, PRBool *_retval)
  {
@@ -943,7 +943,7 @@ diff --git a/modules/libpref/src/nsPrefBranch.cpp b/modules/libpref/src/nsPrefBr
  }
  
  NS_IMETHODIMP nsPrefBranch::LockPref(const char *aPrefName)
-@@ -475,16 +576,35 @@ NS_IMETHODIMP nsPrefBranch::LockPref(con
+@@ -476,16 +577,35 @@ NS_IMETHODIMP nsPrefBranch::LockPref(con
  
  NS_IMETHODIMP nsPrefBranch::PrefIsLocked(const char *aPrefName, PRBool *_retval)
  {
@@ -979,7 +979,7 @@ diff --git a/modules/libpref/src/nsPrefBranch.cpp b/modules/libpref/src/nsPrefBr
  }
  
  NS_IMETHODIMP nsPrefBranch::UnlockPref(const char *aPrefName)
-@@ -581,16 +701,28 @@ NS_IMETHODIMP nsPrefBranch::GetChildList
+@@ -582,16 +702,28 @@ NS_IMETHODIMP nsPrefBranch::GetChildList
  NS_IMETHODIMP nsPrefBranch::AddObserver(const char *aDomain, nsIObserver *aObserver, PRBool aHoldWeak)
  {
    PrefCallbackData *pCallback;
@@ -1008,7 +1008,7 @@ diff --git a/modules/libpref/src/nsPrefBranch.cpp b/modules/libpref/src/nsPrefBr
  
    pCallback = (PrefCallbackData *)NS_Alloc(sizeof(PrefCallbackData) + strlen(aDomain));
    if (nsnull == pCallback)
-@@ -615,31 +747,44 @@ NS_IMETHODIMP nsPrefBranch::AddObserver(
+@@ -616,31 +748,44 @@ NS_IMETHODIMP nsPrefBranch::AddObserver(
    }
  
    strcpy(pCallback->pDomain, aDomain);
@@ -1053,7 +1053,7 @@ diff --git a/modules/libpref/src/nsPrefBranch.cpp b/modules/libpref/src/nsPrefBr
    if (count == 0)
      return NS_OK;
  
-@@ -675,16 +820,23 @@ NS_IMETHODIMP nsPrefBranch::Observe(nsIS
+@@ -676,16 +821,23 @@ NS_IMETHODIMP nsPrefBranch::Observe(nsIS
    if (!nsCRT::strcmp(aTopic, NS_XPCOM_SHUTDOWN_OBSERVER_ID)) {
      freeObserverList();
    }
@@ -1077,7 +1077,7 @@ diff --git a/modules/libpref/src/nsPrefBranch.cpp b/modules/libpref/src/nsPrefBr
    nsCAutoString suffix(newpref + len);  
  
    nsCOMPtr<nsIObserver> observer;
-@@ -833,36 +985,105 @@ pref_enumChild(PLDHashTable *table, PLDH
+@@ -834,36 +986,105 @@ pref_enumChild(PLDHashTable *table, PLDH
   *
   * Pref access without security check - these are here
   * to support nsScriptSecurityManager.
