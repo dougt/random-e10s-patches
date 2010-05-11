@@ -5,9 +5,21 @@ bug_545632_16bpp
 bug_545632_16bpp_qt
 bug_xxxxxx_gfx_image_16bpp_enabler
 
+# places
+bug_556400_places_visitUri
 
-geo1
-geo2
-geo_include_fixup
+# geolocation
+bug_552822_geolocation
 
+# necko
+bug_536289_ftp
+bug_552829_offline_online
+
+# preferences
+bug_506269_preferences
+
+# misc
+bug_561457_shutdown_crash_bandaide
+bug_564929_conditional_jump_in_makefullscreen
+bug_564402_qt_build_bustage_wrt_slots
 

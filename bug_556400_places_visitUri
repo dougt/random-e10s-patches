@@ -1,0 +1,1846 @@
+# HG changeset patch
+# User Benjamin Stover <bstover@mozilla.com>
+# Date 1273083173 25200
+# Node ID facc33f3e2f7f32aaa8afd85d7bb69a9eb37357c
+# Parent  fb4ae79423009f9ef036339c931da59575f222f8
+[mq]: places
+
+diff --git a/docshell/base/IHistory.h b/docshell/base/IHistory.h
+--- a/docshell/base/IHistory.h
++++ b/docshell/base/IHistory.h
+@@ -46,23 +46,38 @@ class nsIURI;
+ 
+ namespace mozilla {
+ 
+     namespace dom {
+         class Link;
+     }
+ 
+ #define IHISTORY_IID \
+-  {0xaf27265d, 0x5672, 0x4d23, {0xa0, 0x75, 0x34, 0x8e, 0xb9, 0x73, 0x5a, 0x9a}}
++  {0x6f736049, 0x6370, 0x4376, {0xb7, 0x17, 0xfa, 0xfc, 0x0b, 0x4f, 0xd0, 0xf1}}
+ 
+ class IHistory : public nsISupports
+ {
+ public:
+     NS_DECLARE_STATIC_IID_ACCESSOR(IHISTORY_IID)
+ 
++    enum VisitFlags {
++        /**
++         * Whether the URI was loaded in a top-level window.
++         */
++        TOP_LEVEL = 1 << 1,
++        /**
++         * Whether the URI was loaded as part of a permanent redirect.
++         */
++        REDIRECT_PERMANENT = 1 << 2,
++        /**
++         * Whether the URI was loaded as part of a temporary redirect.
++         */
++        REDIRECT_TEMPORARY = 1 << 3
++    };
++
+     /**
+      * Registers the Link for notifications about the visited-ness of aURI.
+      * Consumers should assume that the URI is unvisited after calling this, and
+      * they will be notified if that state (unvisited) changes by having
+      * SetLinkState called on themselves.  This function is guaranteed to run to
+      * completion before aLink is notified.  After the node is notified, it will
+      * be unregistered.
+      *
+@@ -91,21 +106,40 @@ public:
+      *
+      * @param aURI
+      *        The URI that aLink was registered for.
+      * @param aLink
+      *        The link object to unregister for aURI.
+      */
+     NS_IMETHOD UnregisterVisitedCallback(nsIURI *aURI, dom::Link *aLink) = 0;
+ 
++    /**
++     * @param aURI
++     *        The URI of the page being visited.
++     * @param aReferrer
++     *        The URI of the referring page.
++     * @param aFlags
++     *        The VisitFlags describing this visit.
++     * @param aRedirectedFrom [optional]
++     *        The URI this URI was redirected from, or NULL if not a redirect.
++     */
++    NS_IMETHOD VisitURI(
++      nsIURI *aURI,
++      nsIURI *aReferrer,
++      PRUint32 aFlags,
++      nsIURI *aRedirectedFrom = NULL
++    ) = 0;
+ };
+ 
+ NS_DEFINE_STATIC_IID_ACCESSOR(IHistory, IHISTORY_IID)
+ 
+ #define NS_DECL_IHISTORY \
+     NS_IMETHOD RegisterVisitedCallback(nsIURI *aURI, \
+                                        mozilla::dom::Link *aContent); \
+     NS_IMETHOD UnregisterVisitedCallback(nsIURI *aURI, \
+-                                         mozilla::dom::Link *aContent);
++                                         mozilla::dom::Link *aContent); \
++    NS_IMETHOD VisitURI(nsIURI *aURI, nsIURI *aReferrer, \
++                        PRUint32 aFlags, \
++                        nsIURI *aRedirectedFrom = NULL);
+ 
+ } // namespace mozilla
+ 
+ #endif // mozilla_IHistory_h_
+diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
+--- a/docshell/base/nsDocShell.cpp
++++ b/docshell/base/nsDocShell.cpp
+@@ -105,16 +105,17 @@
+ #include "nsIInterfaceRequestorUtils.h"
+ #include "nsIView.h"
+ #include "nsIViewManager.h"
+ #include "nsIScriptChannel.h"
+ #include "nsIURIClassifier.h"
+ #include "nsIOfflineCacheUpdate.h"
+ #include "nsCPrefetchService.h"
+ #include "nsJSON.h"
++#include "IHistory.h"
+ 
+ // we want to explore making the document own the load group
+ // so we can associate the document URI with the load group.
+ // until this point, we have an evil hack:
+ #include "nsIHttpChannelInternal.h"  
+ 
+ 
+ // Local Includes
+@@ -5658,42 +5659,57 @@ nsDocShell::OnRedirectStateChange(nsICha
+         return; // not a toplevel document
+ 
+     // If this load is being checked by the URI classifier, we need to
+     // query the classifier again for the new URI.
+     if (mClassifier) {
+         mClassifier->OnRedirect(aOldChannel, aNewChannel);
+     }
+ 
+-    nsCOMPtr<nsIGlobalHistory3> history3(do_QueryInterface(mGlobalHistory));
+-    nsresult result = NS_ERROR_NOT_IMPLEMENTED;
+-    if (history3) {
+-        // notify global history of this redirect
+-        result = history3->AddDocumentRedirect(aOldChannel, aNewChannel,
+-                                               aRedirectFlags, !IsFrame());
+-    }
+-
+-    if (result == NS_ERROR_NOT_IMPLEMENTED) {
+-        // when there is no GlobalHistory3, or it doesn't implement
+-        // AddToplevelRedirect, we fall back to GlobalHistory2.  Just notify
+-        // that the redirecting page was a rePdirect so it will be link colored
+-        // but not visible.
+-        nsCOMPtr<nsIURI> oldURI;
+-        aOldChannel->GetURI(getter_AddRefs(oldURI));
+-        if (! oldURI)
+-            return; // nothing to tell anybody about
+-        AddToGlobalHistory(oldURI, PR_TRUE, aOldChannel);
++    PRUint32 visitURIFlags = 0;
++    if (IsFrame())
++        visitURIFlags &= mozilla::IHistory::TOP_LEVEL;
++
++    if (aRedirectFlags & nsIChannelEventSink::REDIRECT_TEMPORARY)
++        visitURIFlags &= mozilla::IHistory::REDIRECT_TEMPORARY;
++    else
++        visitURIFlags &= mozilla::IHistory::REDIRECT_PERMANENT;
++
++    nsCOMPtr<nsIURI> oldURI, newURI;
++    nsresult rv = aOldChannel->GetURI(getter_AddRefs(oldURI));
++    if (NS_FAILED(rv))
++      return;
++    rv = aNewChannel->GetURI(getter_AddRefs(newURI));
++    if (NS_FAILED(rv))
++      return;
++
++    mozilla::IHistory* history = nsContentUtils::GetHistory();
++    if (history) {
++        // Ensure that VisitURI calls are made in order. If this is the first
++        // redirect, link it to the referrer of this request.
++        nsCOMPtr<nsIURI> referrer;
++        nsresult rv = NS_GetReferrerFromChannel(aOldChannel, getter_AddRefs(referrer));
++        if (NS_SUCCEEDED(rv) && !mCalledVisitURIForReferrer) {
++            // Since the primary purpose of this event is to handle a redirect,
++            // silently continue if VisitURI call fails.
++            (void)history->VisitURI(oldURI, NULL, visitURIFlags, referrer);
++            mCalledVisitURIForReferrer = PR_TRUE;
++        }
++
++        // Ignore internal redirects.
++        // These redirects are not initiated by the remote server, but specific to the
++        // channel implementation, so they are ignored.
++        if (!(aRedirectFlags & nsIChannelEventSink::REDIRECT_INTERNAL))
++            (void)history->VisitURI(newURI, NULL, visitURIFlags, oldURI);
+     }
+ 
+     // check if the new load should go through the application cache.
+     nsCOMPtr<nsIApplicationCacheChannel> appCacheChannel =
+         do_QueryInterface(aNewChannel);
+     if (appCacheChannel) {
+-        nsCOMPtr<nsIURI> newURI;
+-        aNewChannel->GetURI(getter_AddRefs(newURI));
+         appCacheChannel->SetChooseApplicationCache(ShouldCheckAppCache(newURI));
+     }
+ }
+ 
+ NS_IMETHODIMP
+ nsDocShell::OnStatusChange(nsIWebProgress * aWebProgress,
+                            nsIRequest * aRequest,
+                            nsresult aStatus, const PRUnichar * aMessage)
+@@ -10104,38 +10120,42 @@ nsDocShell::AddToGlobalHistory(nsIURI * 
+ 
+     return AddToGlobalHistory(aURI, aRedirect, referrer);
+ }
+ 
+ nsresult
+ nsDocShell::AddToGlobalHistory(nsIURI * aURI, PRBool aRedirect,
+                                nsIURI * aReferrer)
+ {
+-    if (mItemType != typeContent || !mGlobalHistory)
++    if (mItemType != typeContent)
+         return NS_OK;
+-
+-    PRBool visited;
+-    nsresult rv = mGlobalHistory->IsVisited(aURI, &visited);
+-    if (NS_FAILED(rv))
+-        return rv;
+-
+-    rv = mGlobalHistory->AddURI(aURI, aRedirect, !IsFrame(), aReferrer);
+-    if (NS_FAILED(rv))
+-        return rv;
+-
+-    if (!visited) {
+-        nsCOMPtr<nsIObserverService> obsService =
+-            do_GetService("@mozilla.org/observer-service;1");
+-        if (obsService) {
+-            obsService->NotifyObservers(aURI, NS_LINK_VISITED_EVENT_TOPIC, nsnull);
+-        }
+-    }
+-
+-    return NS_OK;
+-
++    
++    nsIURI* redirect = NULL;
++    nsIURI* referrer = NULL;
++    if (aRedirect) {
++      redirect = aReferrer;
++    } else {
++      referrer = aReferrer;
++    }
++
++    if (!mCalledVisitURIForReferrer) {
++        // This request has not called VisitURI linking the referrer to the new
++        // location yet.  There were no redirects.
++        mozilla::IHistory* history = nsContentUtils::GetHistory();
++        NS_ENSURE_STATE(history);
++        nsresult rv = history->VisitURI(aURI,
++                                        referrer,
++                                        (IsFrame() ? 0: mozilla::IHistory::TOP_LEVEL),
++                                        redirect);
++        NS_ENSURE_SUCCESS(rv, rv);
++    }
++
++    mCalledVisitURIForReferrer = PR_FALSE;
++
++    return NS_OK;
+ }
+ 
+ //*****************************************************************************
+ // nsDocShell: Helper Routines
+ //*****************************************************************************
+ 
+ NS_IMETHODIMP
+ nsDocShell::SetLoadType(PRUint32 aLoadType)
+diff --git a/docshell/base/nsDocShell.h b/docshell/base/nsDocShell.h
+--- a/docshell/base/nsDocShell.h
++++ b/docshell/base/nsDocShell.h
+@@ -674,16 +674,19 @@ protected:
+     nsCOMPtr<nsICommandManager> mCommandManager;
+     // Reference to the SHEntry for this docshell until the page is destroyed.
+     // Somebody give me better name
+     nsCOMPtr<nsISHEntry>       mOSHE;
+     // Reference to the SHEntry for this docshell until the page is loaded
+     // Somebody give me better name
+     nsCOMPtr<nsISHEntry>       mLSHE;
+ 
++    // Tracks whether the referrer was called with VisitURI
++    PRBool mCalledVisitURIForReferrer;
++
+     // Holds a weak pointer to a RestorePresentationEvent object if any that
+     // holds a weak pointer back to us.  We use this pointer to possibly revoke
+     // the event whenever necessary.
+     nsRevocableEventPtr<RestorePresentationEvent> mRestorePresentationEvent;
+ 
+     // Editor data, if this document is designMode or contentEditable.
+     nsAutoPtr<nsDocShellEditorData> mEditorData;
+ 
+diff --git a/toolkit/components/places/src/Helpers.cpp b/toolkit/components/places/src/Helpers.cpp
+--- a/toolkit/components/places/src/Helpers.cpp
++++ b/toolkit/components/places/src/Helpers.cpp
+@@ -175,11 +175,38 @@ URIBinder::Bind(mozIStorageBindingParams
+     aName, StringHead(aURLString, URI_LENGTH_MAX)
+   );
+   NS_ENSURE_SUCCESS(rv, rv);
+   return NS_OK;
+ }
+ 
+ #undef URI_TO_URLCSTRING
+ 
++nsresult
++GetReversedHostname(nsIURI* aURI, nsAString& aRevHost)
++{
++  nsCAutoString forward8;
++  nsresult rv = aURI->GetHost(forward8);
++  NS_ENSURE_SUCCESS(rv, rv);
++
++  // can't do reversing in UTF8, better use 16-bit chars
++  NS_ConvertUTF8toUTF16 forward(forward8);
++  GetReversedHostname(forward, aRevHost);
++  return NS_OK;
++}
++
++void
++GetReversedHostname(const nsString& aForward, nsAString& aRevHost)
++{
++  ReverseString(aForward, aRevHost);
++  aRevHost.Append(PRUnichar('.'));
++}
++
++void
++ReverseString(const nsString& aInput, nsAString& aReversed)
++{
++  aReversed.Truncate(0);
++  for (PRInt32 i = aInput.Length() - 1; i >= 0; i--)
++    aReversed.Append(aInput[i]);
++}
+ 
+ } // namespace places
+ } // namespace mozilla
+diff --git a/toolkit/components/places/src/Helpers.h b/toolkit/components/places/src/Helpers.h
+--- a/toolkit/components/places/src/Helpers.h
++++ b/toolkit/components/places/src/Helpers.h
+@@ -131,13 +131,47 @@ public:
+                        const nsACString& aName,
+                        nsIURI* aURI);
+   // Bind URLCString to params by name.
+   static nsresult Bind(mozIStorageBindingParams* aParams,
+                        const nsACString& aName,
+                        const nsACString& aURLString);
+ };
+ 
++/**
++ * This extracts the hostname from the URI and reverses it in the
++ * form that we use (always ending with a "."). So
++ * "http://microsoft.com/" becomes "moc.tfosorcim."
++ * 
++ * The idea behind this is that we can create an index over the items in
++ * the reversed host name column, and then query for as much or as little
++ * of the host name as we feel like.
++ * 
++ * For example, the query "host >= 'gro.allizom.' AND host < 'gro.allizom/'
++ * Matches all host names ending in '.mozilla.org', including
++ * 'developer.mozilla.org' and just 'mozilla.org' (since we define all
++ * reversed host names to end in a period, even 'mozilla.org' matches).
++ * The important thing is that this operation uses the index. Any substring
++ * calls in a select statement (even if it's for the beginning of a string)
++ * will bypass any indices and will be slow).
++ *
++ * @param aURI URI that contains spec to reverse
++ * @param aRevHost Out parameter
++ */
++nsresult GetReversedHostname(nsIURI* aURI, nsAString& aRevHost);
++
++/**
++ * Similar method to GetReversedHostName but for strings
++ */
++void GetReversedHostname(const nsString& aForward, nsAString& aRevHost);
++
++/**
++ * Reverses a string.
++ *
++ * @param aInput The string to be reversed
++ * @param aReversed Ouput parameter will contain the reversed string
++ */
++void ReverseString(const nsString& aInput, nsAString& aReversed);
+ 
+ } // namespace places
+ } // namespace mozilla
+ 
+ #endif // mozilla_places_Helpers_h_
+diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/places/src/History.cpp
+--- a/toolkit/components/places/src/History.cpp
++++ b/toolkit/components/places/src/History.cpp
+@@ -34,16 +34,17 @@
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ #include "History.h"
+ #include "nsNavHistory.h"
++#include "nsNavBookmarks.h"
+ #include "Helpers.h"
+ 
+ #include "mozilla/storage.h"
+ #include "mozilla/dom/Link.h"
+ #include "nsDocShellCID.h"
+ #include "nsIEventStateManager.h"
+ #include "mozilla/Services.h"
+ 
+@@ -53,30 +54,118 @@ namespace mozilla {
+ namespace places {
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+ //// Global Defines
+ 
+ #define URI_VISITED "visited"
+ #define URI_NOT_VISITED "not visited"
+ #define URI_VISITED_RESOLUTION_TOPIC "visited-status-resolution"
++// Observer event fired after a visit has been registered in the DB.
++#define URI_VISIT_SAVED "uri-visit-saved"
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+ //// Anonymous Helpers
+ 
+ namespace {
+ 
++////////////////////////////////////////////////////////////////////////////////
++// Step
++
++struct VisitURIData
++{
++  PRInt64 placeId;
++  PRInt32 hidden;
++  PRInt32 typed;
++  nsCOMPtr<nsIURI> uri;
++
++  // Url of last added visit in chain.
++  nsCAutoString lastUrl;
++  PRInt64 lastVisitId;
++  PRInt32 transitionType;
++  PRInt64 sessionId;
++  PRTime dateTime;
++};
++
++class Step : public AsyncStatementCallback
++{
++public:
++  NS_DECL_ISUPPORTS
++
++  virtual ~Step() {}
++
++  /** Executes statement asynchronously using this as a callback. */
++  NS_IMETHOD ExecuteAsync(mozIStorageStatement* stmt);
++
++  /**
++   * Called once after query is completed.  If your query has more than one
++   * result set to process, you will want to override HandleResult to process
++   * each one.
++   */
++  NS_IMETHOD Callback(mozIStorageResultSet* aResultSet);
++
++  /**
++   * By default, stores the last result set received in mResultSet.
++   * For queries with only one result set, you don't need to override.
++   */
++  NS_IMETHOD HandleResult(mozIStorageResultSet* aResultSet);
++
++  /**
++   * By default, this calls Callback with any saved results from HandleResult.
++   * For queries with only one result set, you don't need to override.
++   */
++  NS_IMETHOD HandleCompletion(PRUint16 aReason);
++
++private:
++  // Used by HandleResult to cache results until HandleCompletion is called.
++  nsCOMPtr<mozIStorageResultSet> mResultSet;
++};
++
++NS_IMPL_ISUPPORTS1(
++  Step,
++  mozIStorageStatementCallback
++)
++
++NS_IMETHODIMP Step::ExecuteAsync(mozIStorageStatement* stmt)
++{
++  mozStorageStatementScoper scoper(stmt);
++  nsCOMPtr<mozIStoragePendingStatement> handle;
++  nsresult rv = stmt->ExecuteAsync(this, getter_AddRefs(handle));
++  NS_ENSURE_SUCCESS(rv, rv);
++  scoper.Abandon();
++  return NS_OK;
++}
++
++NS_IMETHODIMP Step::Callback(mozIStorageResultSet* aResultSet)
++{
++  return NS_OK;
++}
++
++NS_IMETHODIMP Step::HandleResult(mozIStorageResultSet* aResultSet)
++{
++  mResultSet = aResultSet;
++  return NS_OK;
++}
++
++NS_IMETHODIMP Step::HandleCompletion(PRUint16 aReason)
++{
++  nsCOMPtr<mozIStorageResultSet> resultSet = mResultSet;
++  mResultSet = NULL;
++  Callback(resultSet);
++  return NS_OK;
++}
++
+ class VisitedQuery : public mozIStorageStatementCallback
+ {
+ public:
+   NS_DECL_ISUPPORTS
+ 
+   static nsresult Start(nsIURI* aURI)
+   {
+-    NS_ASSERTION(aURI, "Don't pass a null URI!");
++    NS_ENSURE_ARG_POINTER(aURI);
+ 
+     nsNavHistory* navHist = nsNavHistory::GetHistoryService();
+     NS_ENSURE_TRUE(navHist, NS_ERROR_FAILURE);
+     mozIStorageStatement* stmt = navHist->GetStatementById(DB_IS_PAGE_VISITED);
+     NS_ENSURE_STATE(stmt);
+ 
+     // Bind by index for performance.
+     nsresult rv = URIBinder::Bind(stmt, 0, aURI);
+@@ -150,21 +239,37 @@ NS_IMPL_ISUPPORTS1(
+ //// History
+ 
+ History* History::gService = NULL;
+ 
+ History::History()
+ {
+   NS_ASSERTION(!gService, "Ruh-roh!  This service has already been created!");
+   gService = this;
++
++  nsCOMPtr<nsIObserverService> observerService =
++    mozilla::services::GetObserverService();
++  NS_WARN_IF_FALSE(observerService, "Could not get observer service.");
++  if (observerService) {
++    nsresult rv = observerService->AddObserver(this,
++                                       URI_VISIT_SAVED,
++                                       PR_FALSE);
++    NS_WARN_IF_FALSE(NS_SUCCEEDED(rv), "Could not add observer.");
++  }
+ }
+ 
+ History::~History()
+ {
+   gService = NULL;
++
++  nsCOMPtr<nsIObserverService> observerService =
++    mozilla::services::GetObserverService();
++  if (observerService)
++    (void)observerService->RemoveObserver(this,
++                                          URI_VISIT_SAVED);
+ #ifdef DEBUG
+   if (mObservers.IsInitialized()) {
+     NS_ASSERTION(mObservers.Count() == 0,
+                  "Not all Links were removed before we disappear!");
+   }
+ #endif
+ }
+ 
+@@ -226,16 +331,465 @@ History::GetSingleton()
+ 
+   NS_ADDREF(gService);
+   return gService;
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+ //// IHistory
+ 
++namespace {
++
++/**
++ * STEP 4: Update frecency of URI and notify observers.
++ */
++class UpdateFrecencyAndNotifyStep :  public Step {
++protected:
++  VisitURIData* mData;
++
++public:
++  NS_DECL_ISUPPORTS_INHERITED
++
++  UpdateFrecencyAndNotifyStep(VisitURIData* aData) : mData(aData)
++  {
++  }
++
++  NS_IMETHOD Callback(mozIStorageResultSet* aResultSet)
++  {
++    // TODO need to figure out story for not synchronous frecency updating
++    // (bug 556631)
++
++    // Swallow errors here, since if we've gotten this far, it's more
++    // important to notify the observers below.
++    nsNavHistory* history = nsNavHistory::GetHistoryService();
++    nsNavBookmarks* bs = nsNavBookmarks::GetBookmarksService();
++    NS_WARN_IF_FALSE(history, "Could not get history service");
++    NS_WARN_IF_FALSE(bs, "Could not get bookmarks service");
++    if (history && bs) {
++      // Update frecency (*after* the visit info is in the db)
++      nsresult rv = history->UpdateFrecency(mData->placeId,
++                                    bs->IsRealBookmark(mData->placeId));
++      NS_WARN_IF_FALSE(NS_SUCCEEDED(rv), "Could not update frecency");
++    }
++
++    nsCOMPtr<nsIObserverService> obsService =
++      do_GetService("@mozilla.org/observer-service;1");
++    if (obsService) {
++      nsresult rv = obsService->NotifyObservers(mData->uri, URI_VISIT_SAVED, nsnull);
++      NS_WARN_IF_FALSE(NS_SUCCEEDED(rv), "Could not notify observers");
++    }
++
++    return NS_OK;
++  }
++};
++NS_IMPL_ISUPPORTS_INHERITED0(
++  UpdateFrecencyAndNotifyStep
++, Step
++)
++
++/**
++ * STEP 3: Add visit to moz_history_visits table.
++ */
++class AddVisitStep : public Step
++{
++protected:
++  VisitURIData* mData;
++
++public:
++  NS_DECL_ISUPPORTS_INHERITED
++
++  AddVisitStep(VisitURIData* aData) : mData(aData)
++  {
++  }
++
++  NS_IMETHOD Callback(mozIStorageResultSet* aResultSet)
++  {
++    nsresult rv;
++
++    nsNavHistory* history = nsNavHistory::GetHistoryService();
++    NS_ENSURE_TRUE(history, NS_ERROR_OUT_OF_MEMORY);
++
++    // TODO need to figure out story for new session IDs that isn't synchronous
++    // (bug 561450)
++
++    if (aResultSet) {
++      // Just got last visit information
++      nsCOMPtr<mozIStorageRow> row;
++      rv = aResultSet->GetNextRow(getter_AddRefs(row));
++      NS_ENSURE_SUCCESS(rv, rv);
++
++      PRInt64 possibleSessionId;
++      PRTime lastVisitOfSession;
++
++      rv = row->GetInt64(0, &mData->lastVisitId);
++      NS_ENSURE_SUCCESS(rv, rv);
++      rv = row->GetInt64(1, &possibleSessionId);
++      NS_ENSURE_SUCCESS(rv, rv);
++      rv = row->GetInt64(2, &lastVisitOfSession);
++      NS_ENSURE_SUCCESS(rv, rv);
++
++      if (mData->dateTime - lastVisitOfSession <= RECENT_EVENT_THRESHOLD) {
++        mData->sessionId = possibleSessionId;
++      } else {
++        // Session is too old. Start a new one.
++        mData->sessionId = history->GetNewSessionID();
++        mData->lastVisitId = 0;
++      }
++    } else {
++      // No previous saved visit entry could be found, so start a new session.
++      mData->sessionId = history->GetNewSessionID();
++      mData->lastVisitId = 0;
++    }
++
++    nsCOMPtr<mozIStorageStatement> stmt =
++      history->GetStatementById(DB_INSERT_VISIT);
++
++    rv = stmt->BindInt64ByIndex(0, mData->lastVisitId);
++    NS_ENSURE_SUCCESS(rv, rv);
++    rv = stmt->BindInt64ByIndex(1, mData->placeId);
++    NS_ENSURE_SUCCESS(rv, rv);
++    rv = stmt->BindInt64ByIndex(2, mData->dateTime);
++    NS_ENSURE_SUCCESS(rv, rv);
++    rv = stmt->BindInt32ByIndex(3, mData->transitionType);
++    NS_ENSURE_SUCCESS(rv, rv);
++    rv = stmt->BindInt64ByIndex(4, mData->sessionId);
++    NS_ENSURE_SUCCESS(rv, rv);
++
++    nsCOMPtr<Step> step = new UpdateFrecencyAndNotifyStep(mData);
++    rv = step->ExecuteAsync(stmt);
++    NS_ENSURE_SUCCESS(rv, rv);
++
++    return NS_OK;
++  }
++};
++NS_IMPL_ISUPPORTS_INHERITED0(
++  AddVisitStep
++, Step
++)
++
++/**
++ * STEP 2: Callback for inserting or updating a moz_places entry.
++ *         This step checks database for the last visit in session.
++ */
++class CheckLastVisitStep : public Step
++{
++protected:
++  VisitURIData* mData;
++
++public:
++  NS_DECL_ISUPPORTS_INHERITED
++
++  CheckLastVisitStep(VisitURIData* aData) : mData(aData)
++  {
++  }
++
++  NS_IMETHOD Callback(mozIStorageResultSet* aResultSet)
++  {
++    nsresult rv;
++
++    if (aResultSet) {
++      // Last step inserted a new URL. This query contains the id.
++      nsCOMPtr<mozIStorageRow> row;
++      rv = aResultSet->GetNextRow(getter_AddRefs(row));
++      NS_ENSURE_SUCCESS(rv, rv);
++
++      rv = row->GetInt64(0, &mData->placeId);
++      NS_ENSURE_SUCCESS(rv, rv);
++    }
++
++    if (!mData->lastUrl.IsEmpty()) {
++      // Find last visit ID and session ID using lastUrl so we can add them
++      // to a browsing session if the visit was recent.
++      nsNavHistory* history = nsNavHistory::GetHistoryService();
++      NS_ENSURE_TRUE(history, NS_ERROR_OUT_OF_MEMORY);
++      nsCOMPtr<mozIStorageStatement> stmt =
++        history->GetStatementById(DB_RECENT_VISIT_OF_URL);
++      NS_ENSURE_SUCCESS(rv, rv);
++
++      rv = URIBinder::Bind(stmt, NS_LITERAL_CSTRING("page_url"), mData->lastUrl);
++      NS_ENSURE_SUCCESS(rv, rv);
++
++      nsCOMPtr<Step> step = new AddVisitStep(mData);
++      rv = step->ExecuteAsync(stmt);
++      NS_ENSURE_SUCCESS(rv, rv);
++    } else {
++      // Empty lastUrl.
++      // Not part of a session.  Just run next step's callback with no results.
++      nsCOMPtr<Step> step = new AddVisitStep(mData);
++      rv = step->Callback(NULL);
++      NS_ENSURE_SUCCESS(rv, rv);
++    }
++
++    return NS_OK;
++  }
++};
++NS_IMPL_ISUPPORTS_INHERITED0(
++  CheckLastVisitStep
++, Step
++)
++
++/**
++ * Step 1a: Called only when a new entry is put into moz_places.
++ *          Finds the ID of a recently inserted place.
++ */
++class FindNewIdStep : public Step
++{
++protected:
++  VisitURIData* mData;
++
++public:
++  NS_DECL_ISUPPORTS_INHERITED
++
++  FindNewIdStep(VisitURIData* aData) : mData(aData)
++  {
++  }
++
++  NS_IMETHOD Callback(mozIStorageResultSet* aResultSet)
++  {
++    // Get newly created ID
++    nsNavHistory* history = nsNavHistory::GetHistoryService();
++    NS_ENSURE_TRUE(history, NS_ERROR_OUT_OF_MEMORY);
++    nsCOMPtr<mozIStorageStatement> stmt =
++      history->GetStatementById(DB_GET_PAGE_VISIT_STATS);
++
++    nsCAutoString url;
++    nsresult rv = mData->uri->GetSpec(url);
++    NS_ENSURE_SUCCESS(rv, rv);
++    rv = URIBinder::Bind(stmt, NS_LITERAL_CSTRING("page_url"), url);
++    NS_ENSURE_SUCCESS(rv, rv);
++
++    nsCOMPtr<Step> step = new CheckLastVisitStep(mData);
++    rv = step->ExecuteAsync(stmt);
++    NS_ENSURE_SUCCESS(rv, rv);
++
++    return NS_OK;
++  }
++};
++NS_IMPL_ISUPPORTS_INHERITED0(
++  FindNewIdStep
++, Step
++)
++
++/**
++ * Step 1: Callback for checking for an existing URI in moz_places.
++ *         This step inserts or updates the URI accordingly.
++ */
++class CheckExistingStep : public Step
++{
++protected:
++  VisitURIData* mData;
++
++public:
++  NS_DECL_ISUPPORTS_INHERITED
++
++  CheckExistingStep(VisitURIData* aData) : mData(aData)
++  {
++  }
++
++  NS_IMETHOD Callback(mozIStorageResultSet* aResultSet)
++  {
++    nsresult rv;
++    nsCOMPtr<mozIStorageStatement> stmt;
++
++    nsNavHistory* history = nsNavHistory::GetHistoryService();
++    NS_ENSURE_TRUE(history, NS_ERROR_OUT_OF_MEMORY);
++
++    if (aResultSet) {
++      nsCOMPtr<mozIStorageRow> row;
++      rv = aResultSet->GetNextRow(getter_AddRefs(row));
++      NS_ENSURE_SUCCESS(rv, rv);
++
++      rv = row->GetInt64(0, &mData->placeId);
++      NS_ENSURE_SUCCESS(rv, rv);
++
++      if (!mData->typed) {
++        // If this transition wasn't typed, others might have been. If database
++        // has location as typed, reflect that in our data structure.
++        rv = row->GetInt32(2, &mData->typed);
++        NS_ENSURE_SUCCESS(rv, rv);
++      }
++      if (mData->hidden) {
++        // If this transition was hidden, it is possible that others were not.
++        // Any one visible transition makes this location visible. If database
++        // has location as visible, reflect that in our data structure.
++        rv = row->GetInt32(3, &mData->hidden);
++        NS_ENSURE_SUCCESS(rv, rv);
++      }
++
++      // Note: trigger updates visit_count.
++      stmt = history->GetStatementById(DB_UPDATE_PAGE_VISIT_STATS);
++
++      rv = stmt->BindInt32ByName(NS_LITERAL_CSTRING("typed"), mData->typed);
++      NS_ENSURE_SUCCESS(rv, rv);
++      rv = stmt->BindInt32ByName(NS_LITERAL_CSTRING("hidden"), mData->hidden);
++      NS_ENSURE_SUCCESS(rv, rv);
++      rv = stmt->BindInt64ByName(NS_LITERAL_CSTRING("page_id"), mData->placeId);
++      NS_ENSURE_SUCCESS(rv, rv);
++
++      nsCOMPtr<Step> step = new CheckLastVisitStep(mData);
++      rv = step->ExecuteAsync(stmt);
++      NS_ENSURE_SUCCESS(rv, rv);
++    } else {
++      // No entry exists, so create one.
++      stmt = history->GetStatementById(DB_ADD_NEW_PAGE);
++
++      nsCAutoString url;
++      rv = mData->uri->GetSpec(url);
++      NS_ENSURE_SUCCESS(rv, rv);
++      nsAutoString revHost;
++      rv = GetReversedHostname(mData->uri, revHost);
++      NS_ENSURE_SUCCESS(rv, rv);
++
++      rv = URIBinder::Bind(stmt, NS_LITERAL_CSTRING("page_url"), url);
++      NS_ENSURE_SUCCESS(rv, rv);
++      rv = stmt->BindStringByName(NS_LITERAL_CSTRING("rev_host"), revHost);
++      NS_ENSURE_SUCCESS(rv, rv);
++      rv = stmt->BindInt32ByName(NS_LITERAL_CSTRING("typed"), mData->typed);
++      NS_ENSURE_SUCCESS(rv, rv);
++      rv = stmt->BindInt32ByName(NS_LITERAL_CSTRING("hidden"), mData->hidden);
++      NS_ENSURE_SUCCESS(rv, rv);
++      rv = stmt->BindInt32ByName(NS_LITERAL_CSTRING("frecency"), -1);
++      NS_ENSURE_SUCCESS(rv, rv);
++
++      nsCOMPtr<Step> step = new FindNewIdStep(mData);
++      rv = step->ExecuteAsync(stmt);
++      NS_ENSURE_SUCCESS(rv, rv);
++    }
++
++    return NS_OK;
++  }
++};
++NS_IMPL_ISUPPORTS_INHERITED0(
++  CheckExistingStep
++, Step
++)
++
++}  // end anonymous namespace for VisitURI helpers
++
++void History::StartNextVisitURI()
++{
++  VisitURIData* data = (VisitURIData*) mPendingVisits.PeekFront();
++  if (!data)
++    // No more pending visits left to process.
++    return;
++  
++  nsNavHistory* history = nsNavHistory::GetHistoryService();
++  if (!history) {
++    NS_WARNING("Could not get history service");
++    return;
++  }
++
++  nsCAutoString url;
++  nsresult rv = data->uri->GetSpec(url);
++  if (!NS_SUCCEEDED(rv)) {
++    NS_WARNING("Could not get URI spec");
++    return;
++  }
++
++  // Find existing entry in moz_places table, if any.
++  nsCOMPtr<mozIStorageStatement> stmt =
++    history->GetStatementById(DB_GET_PAGE_VISIT_STATS);
++
++  rv = URIBinder::Bind(stmt, NS_LITERAL_CSTRING("page_url"), url);
++  if (!NS_SUCCEEDED(rv)) {
++    NS_WARNING("Could not bind parameter");
++    return;
++  }
++
++  nsCOMPtr<Step> step = new CheckExistingStep(data);
++  rv = step->ExecuteAsync(stmt);
++  NS_WARN_IF_FALSE(NS_SUCCEEDED(rv), "Could not execute statement");
++}
++
++NS_IMETHODIMP
++History::VisitURI(nsIURI* aURI,
++                  nsIURI* aReferrer,
++                  PRUint32 aFlags,
++                  nsIURI* aRedirectFrom)
++{
++  NS_ENSURE_ARG_POINTER(aURI);
++
++  nsNavHistory* history = nsNavHistory::GetHistoryService();
++  NS_ENSURE_TRUE(history, NS_ERROR_OUT_OF_MEMORY);
++
++  // Silently return if URI is something we shouldn't add to DB.
++  PRBool canAdd;
++  nsresult rv = history->CanAddURI(aURI, &canAdd);
++  NS_ENSURE_SUCCESS(rv, rv);
++  if (!canAdd) {
++    return NS_OK;
++  }
++
++  // Populate data structure that will be used in our async SQL steps.
++  nsAutoPtr<VisitURIData> data(new VisitURIData());
++
++  nsCAutoString url;
++  rv = aURI->GetSpec(url);
++  NS_ENSURE_SUCCESS(rv, rv);
++  if (aReferrer) {
++    rv = aReferrer->GetSpec(data->lastUrl);
++    NS_ENSURE_SUCCESS(rv, rv);
++  } else if (aRedirectFrom) {
++    rv = aRedirectFrom->GetSpec(data->lastUrl);
++    NS_ENSURE_SUCCESS(rv, rv);
++  }
++
++  if (url.Equals(data->lastUrl)) {
++    // Do not save refresh-page visits.
++    return NS_OK;
++  }
++
++  // Assigns a type to the edge in the visit linked list. Each type will be
++  // considered differently when weighting the frecency of a location.
++  PRUint32 recentFlags = history->GetRecentFlags(aURI);
++  if (aFlags & REDIRECT_TEMPORARY) {
++    data->transitionType = nsINavHistoryService::TRANSITION_REDIRECT_TEMPORARY;
++  } else if (aFlags & REDIRECT_PERMANENT) {
++    data->transitionType = nsINavHistoryService::TRANSITION_REDIRECT_PERMANENT;
++  } else if (recentFlags & nsNavHistory::RECENT_TYPED) {
++    data->transitionType = nsINavHistoryService::TRANSITION_TYPED;
++  } else if (recentFlags & nsNavHistory::RECENT_BOOKMARKED) {
++    data->transitionType = nsINavHistoryService::TRANSITION_BOOKMARK;
++  } else if (aFlags & IHistory::TOP_LEVEL) {
++    // User was redirected or link was clicked in the main window.
++    data->transitionType = nsINavHistoryService::TRANSITION_LINK;
++  } else if (recentFlags & nsNavHistory::RECENT_ACTIVATED) {
++    // User activated a link in a frame.
++    data->transitionType = nsINavHistoryService::TRANSITION_FRAMED_LINK;
++  } else {
++    // A frame redirected to a new site without user interaction.
++    data->transitionType = nsINavHistoryService::TRANSITION_EMBED;
++  }
++
++  data->typed = (data->transitionType == nsINavHistoryService::TRANSITION_TYPED) ? 1 : 0;
++  PRBool redirectedButNotTyped =
++    aRedirectFrom && data->transitionType != nsINavHistoryService::TRANSITION_TYPED;
++  data->hidden = 
++    (data->transitionType == nsINavHistoryService::TRANSITION_FRAMED_LINK ||
++    data->transitionType == nsINavHistoryService::TRANSITION_EMBED ||
++    redirectedButNotTyped) ? 1 : 0;
++  data->dateTime = PR_Now();
++  data->uri = aURI;
++
++  // Queue will own data's lifetime
++  mPendingVisits.Push(data.forget());
++  if (mPendingVisits.GetSize() == 1) {
++    // There are no other pending visits.
++    StartNextVisitURI();
++  }
++
++  nsCOMPtr<nsIObserverService> obsService =
++    do_GetService("@mozilla.org/observer-service;1");
++  if (obsService) {
++    obsService->NotifyObservers(aURI, NS_LINK_VISITED_EVENT_TOPIC, nsnull);
++  }
++
++  return NS_OK;
++}
++
+ NS_IMETHODIMP
+ History::RegisterVisitedCallback(nsIURI* aURI,
+                                  Link* aLink)
+ {
+   NS_ASSERTION(aURI, "Must pass a non-null URI!");
+   NS_ASSERTION(aLink, "Must pass a non-null Link object!");
+ 
+   // First, ensure that our hash table is setup.
+@@ -304,17 +858,39 @@ History::UnregisterVisitedCallback(nsIUR
+   if (observers.IsEmpty()) {
+     mObservers.RemoveEntry(aURI);
+   }
+ 
+   return NS_OK;
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////
++//// nsIObserver
++
++NS_IMETHODIMP
++History::Observe(nsISupports* aSubject,
++                 const char* aTopic,
++                 const PRUnichar* aData)
++{
++  VisitURIData* data = (VisitURIData*) mPendingVisits.PeekFront();
++  nsCOMPtr<nsIURI> uri = do_QueryInterface(aSubject);
++  NS_ENSURE_STATE(uri);
++
++  if (data && uri == data->uri) {
++    nsAutoPtr<VisitURIData> deadDataWalking(
++      (VisitURIData*) mPendingVisits.PopFront());
++    StartNextVisitURI();
++  }
++
++  return NS_OK;
++}
++
++////////////////////////////////////////////////////////////////////////////////
+ //// nsISupports
+ 
+-NS_IMPL_ISUPPORTS1(
++NS_IMPL_ISUPPORTS2(
+   History,
+-  IHistory
++  IHistory,
++  nsIObserver
+ )
+ 
+ } // namespace places
+ } // namespace mozilla
+diff --git a/toolkit/components/places/src/History.h b/toolkit/components/places/src/History.h
+--- a/toolkit/components/places/src/History.h
++++ b/toolkit/components/places/src/History.h
+@@ -41,28 +41,30 @@
+ #define mozilla_places_History_h_
+ 
+ #include "mozilla/IHistory.h"
+ #include "mozilla/dom/Link.h"
+ #include "nsTHashtable.h"
+ #include "nsString.h"
+ #include "nsURIHashKey.h"
+ #include "nsTArray.h"
++#include "nsDeque.h"
+ 
+ namespace mozilla {
+ namespace places {
+ 
+ #define NS_HISTORYSERVICE_CID \
+   {0x9fc91e65, 0x1475, 0x4353, {0x9b, 0x9a, 0x93, 0xd7, 0x6f, 0x5b, 0xd9, 0xb7}}
+ 
+-class History : public IHistory
++class History : public IHistory, public nsIObserver
+ {
+ public:
+   NS_DECL_ISUPPORTS
+   NS_DECL_IHISTORY
++  NS_DECL_NSIOBSERVER
+ 
+   History();
+ 
+   /**
+    * Notifies about the visited status of a given URI.
+    *
+    * @param aURI
+    *        The URI to notify about.
+@@ -78,16 +80,39 @@ public:
+    * Obtains a pointer that has had AddRef called on it.  Used by the service
+    * manager only.
+    */
+   static History *GetSingleton();
+ 
+ private:
+   ~History();
+ 
++  /**
++   * Since visits rapidly fire at once, it's very likely to have race
++   * conditions for SQL queries.  We often need to see if a row exists
++   * or peek at values, and by the time we have retrieved them they could
++   * be different.
++   *
++   * We guarantee an ordering of our SQL statements so that a set of
++   * callbacks for one visit are guaranteed to be atomic.  Each visit consists
++   * of a data structure that sits in this queue.
++   *
++   * The front of the queue always has the current visit we are processing.
++   */
++  nsDeque mPendingVisits;
++
++  /**
++   * Begins next visit URI procedure for the data at the front of the visit
++   * queue. When all the steps are finished, the data will be removed from
++   * the queue.
++   *
++   * Do not call this twice for the same visit.
++   */
++  void StartNextVisitURI();
++
+   static History *gService;
+ 
+   typedef nsTArray<mozilla::dom::Link *> ObserverArray;
+ 
+   class KeyClass : public nsURIHashKey
+   {
+   public:
+     KeyClass(const nsIURI *aURI)
+diff --git a/toolkit/components/places/src/nsNavHistory.cpp b/toolkit/components/places/src/nsNavHistory.cpp
+--- a/toolkit/components/places/src/nsNavHistory.cpp
++++ b/toolkit/components/places/src/nsNavHistory.cpp
+@@ -81,21 +81,16 @@
+ 
+ #ifdef MOZ_XUL
+ #include "nsIAutoCompleteInput.h"
+ #include "nsIAutoCompletePopup.h"
+ #endif
+ 
+ using namespace mozilla::places;
+ 
+-// Microsecond timeout for "recent" events such as typed and bookmark following.
+-// If you typed it more than this time ago, it's not recent.
+-// This is 15 minutes           m    s/m  us/s
+-#define RECENT_EVENT_THRESHOLD ((PRInt64)15 * 60 * PR_USEC_PER_SEC)
+-
+ // The maximum number of things that we will store in the recent events list
+ // before calling ExpireNonrecentEvents. This number should be big enough so it
+ // is very difficult to get that many unconsumed events (for example, typed but
+ // never visited) in the RECENT_EVENT_THRESHOLD. Otherwise, we'll start
+ // checking each one for every page visit, which will be somewhat slower.
+ #define RECENT_EVENT_QUEUE_MAX_LENGTH 128
+ 
+ // preference ID strings
+@@ -230,31 +225,22 @@ NS_IMPL_CI_INTERFACE_GETTER5(
+ , nsIGlobalHistory3
+ , nsIGlobalHistory2
+ , nsIDownloadHistory
+ , nsIBrowserHistory
+ )
+ 
+ namespace {
+ 
+-static nsresult GetReversedHostname(nsIURI* aURI, nsAString& host);
+-static void GetReversedHostname(const nsString& aForward, nsAString& aReversed);
+ static PRInt64 GetSimpleBookmarksQueryFolder(
+     const nsCOMArray<nsNavHistoryQuery>& aQueries,
+     nsNavHistoryQueryOptions* aOptions);
+ static void ParseSearchTermsFromQueries(const nsCOMArray<nsNavHistoryQuery>& aQueries,
+                                         nsTArray<nsTArray<nsString>*>* aTerms);
+ 
+-inline void ReverseString(const nsString& aInput, nsAString& aReversed)
+-{
+-  aReversed.Truncate(0);
+-  for (PRInt32 i = aInput.Length() - 1; i >= 0; i --)
+-    aReversed.Append(aInput[i]);
+-}
+-
+ } // anonymous namespace
+ 
+ namespace mozilla {
+   namespace places {
+ 
+     bool hasRecentCorruptDB()
+     {
+       nsCOMPtr<nsIFile> profDir;
+@@ -898,16 +884,36 @@ nsNavHistory::GetDatabaseStatus(PRUint16
+  */
+ nsresult
+ nsNavHistory::UpdateSchemaVersion()
+ {
+   return mDBConn->SetSchemaVersion(DATABASE_SCHEMA_VERSION);
+ }
+ 
+ 
++PRUint32
++nsNavHistory::GetRecentFlags(nsIURI *aURI)
++{
++  PRUint32 result = 0;
++  nsCAutoString spec;
++  nsresult rv = aURI->GetSpec(spec);
++
++  if (NS_SUCCEEDED(rv)) {
++    if (CheckIsRecentEvent(&mRecentTyped, spec))
++      result |= RECENT_TYPED;
++    if (CheckIsRecentEvent(&mRecentLink, spec))
++      result |= RECENT_ACTIVATED;
++    if (CheckIsRecentEvent(&mRecentBookmark, spec))
++      result |= RECENT_BOOKMARKED;
++  }
++
++  return result;
++}
++
++
+ /**
+  * Called after InitDB, this creates our own functions
+  */
+ class mozStorageFunctionGetUnreversedHost: public mozIStorageFunction
+ {
+ public:
+   NS_DECL_ISUPPORTS
+   NS_DECL_MOZISTORAGEFUNCTION
+@@ -1854,16 +1860,19 @@ nsNavHistory::GetUrlIdFor(nsIURI* aURI, 
+ 
+ 
+ // nsNavHistory::InternalAddNewPage
+ //
+ //    Adds a new page to the DB.
+ //    THIS SHOULD BE THE ONLY PLACE NEW moz_places ROWS ARE
+ //    CREATED. This allows us to maintain better consistency.
+ //
++//    XXX this functionality is being moved to History.cpp, so
++//    in fact there *are* two places where new pages are added.
++//
+ //    If non-null, the new page ID will be placed into aPageID.
+ 
+ nsresult
+ nsNavHistory::InternalAddNewPage(nsIURI* aURI,
+                                  const nsAString& aTitle,
+                                  PRBool aHidden,
+                                  PRBool aTyped,
+                                  PRInt32 aVisitCount,
+@@ -7472,62 +7481,16 @@ nsNavHistory::RemoveDuplicateURIs()
+   rv = transaction.Commit();
+   NS_ENSURE_SUCCESS(rv, rv);
+   return NS_OK;
+ }
+ 
+ 
+ namespace {
+ 
+-// GetReversedHostname
+-//
+-//    This extracts the hostname from the URI and reverses it in the
+-//    form that we use (always ending with a "."). So
+-//    "http://microsoft.com/" becomes "moc.tfosorcim."
+-//
+-//    The idea behind this is that we can create an index over the items in
+-//    the reversed host name column, and then query for as much or as little
+-//    of the host name as we feel like.
+-//
+-//    For example, the query "host >= 'gro.allizom.' AND host < 'gro.allizom/'
+-//    Matches all host names ending in '.mozilla.org', including
+-//    'developer.mozilla.org' and just 'mozilla.org' (since we define all
+-//    reversed host names to end in a period, even 'mozilla.org' matches).
+-//    The important thing is that this operation uses the index. Any substring
+-//    calls in a select statement (even if it's for the beginning of a string)
+-//    will bypass any indices and will be slow).
+-
+-nsresult
+-GetReversedHostname(nsIURI* aURI, nsAString& aRevHost)
+-{
+-  nsCString forward8;
+-  nsresult rv = aURI->GetHost(forward8);
+-  if (NS_FAILED(rv)) {
+-    return rv;
+-  }
+-
+-  // can't do reversing in UTF8, better use 16-bit chars
+-  NS_ConvertUTF8toUTF16 forward(forward8);
+-  GetReversedHostname(forward, aRevHost);
+-  return NS_OK;
+-}
+-
+-
+-// GetReversedHostname
+-//
+-//    Same as previous but for strings
+-
+-void
+-GetReversedHostname(const nsString& aForward, nsAString& aRevHost)
+-{
+-  ReverseString(aForward, aRevHost);
+-  aRevHost.Append(PRUnichar('.'));
+-}
+-
+-
+ // GetSimpleBookmarksQueryFolder
+ //
+ //    Determines if this set of queries is a simple bookmarks query for a
+ //    folder with no other constraints. In these common cases, we can more
+ //    efficiently compute the results.
+ //
+ //    A simple bookmarks query will result in a hierarchical tree of
+ //    bookmark items, folders and separators.
+diff --git a/toolkit/components/places/src/nsNavHistory.h b/toolkit/components/places/src/nsNavHistory.h
+--- a/toolkit/components/places/src/nsNavHistory.h
++++ b/toolkit/components/places/src/nsNavHistory.h
+@@ -83,16 +83,21 @@
+ // mInPrivateBrowsing member
+ #define PRIVATEBROWSING_NOTINITED (PRBool(0xffffffff))
+ 
+ // Clamp title and URL to generously large, but not too large, length.
+ // See bug 319004 for details.
+ #define URI_LENGTH_MAX 65536
+ #define TITLE_LENGTH_MAX 4096
+ 
++// Microsecond timeout for "recent" events such as typed and bookmark following.
++// If you typed it more than this time ago, it's not recent.
++// This is 15 minutes           m    s/m  us/s
++#define RECENT_EVENT_THRESHOLD PRTime((PRInt64)15 * 60 * PR_USEC_PER_SEC)
++
+ #ifdef MOZ_XUL
+ // Fired after autocomplete feedback has been updated.
+ #define TOPIC_AUTOCOMPLETE_FEEDBACK_UPDATED "places-autocomplete-feedback-updated"
+ #endif
+ // Fired when Places is shutting down.
+ #define TOPIC_PLACES_SHUTDOWN "places-shutdown"
+ // Fired when Places found a locked database while initing.
+ #define TOPIC_DATABASE_LOCKED "places-database-locked"
+@@ -103,31 +108,43 @@
+ 
+ namespace mozilla {
+ namespace places {
+ 
+   enum HistoryStatementId {
+     DB_GET_PAGE_INFO_BY_URL = 0
+   , DB_GET_TAGS = 1
+   , DB_IS_PAGE_VISITED = 2
++  , DB_INSERT_VISIT = 3
++  , DB_RECENT_VISIT_OF_URL = 4
++  , DB_GET_PAGE_VISIT_STATS = 5
++  , DB_UPDATE_PAGE_VISIT_STATS = 6
++  , DB_ADD_NEW_PAGE = 7
+   };
+ 
+ } // namespace places
+ } // namespace mozilla
+ 
+ 
+ class mozIAnnotationService;
+ class nsNavHistory;
+ class nsNavBookmarks;
+ class QueryKeyValuePair;
+ class nsIEffectiveTLDService;
+ class nsIIDNService;
+ class PlacesSQLQueryBuilder;
+ class nsIAutoCompleteController;
+ 
++struct RecentEventResult {
++  PRBool typed;  // User typed in URL recently
++  PRBool activated;  // User tapped URL link recently
++  PRBool bookmarked;  // User bookmarked URL recently
++  PRBool redirected;  // Was redirected to URL recently
++};
++
+ // nsNavHistory
+ 
+ class nsNavHistory : public nsSupportsWeakReference
+                    , public nsINavHistoryService
+                    , public nsIObserver
+                    , public nsIBrowserHistory
+                    , public nsIGlobalHistory3
+                    , public nsIDownloadHistory
+@@ -385,32 +402,57 @@ public:
+ 
+   /**
+    * Indicates if it is OK to notify history observers or not.
+    *
+    * @returns true if it is OK to notify, false otherwise.
+    */
+   bool canNotify() { return mCanNotify; }
+ 
++  enum RecentEventFlags {
++    RECENT_TYPED      = 1<<1,  // User typed in URL recently
++    RECENT_ACTIVATED  = 1<<2,  // User tapped URL link recently
++    RECENT_BOOKMARKED = 1<<3   // User bookmarked URL recently (hey there's a <3!)
++  };
++
++  /**
++   * Returns any recent activity done with a URL.
++   * @return Any recent events associated with this URI.  Each bit is set
++   *         according to RecentEventFlags enum values.
++   */
++  PRUint32 GetRecentFlags(nsIURI *aURI);
++
+   mozIStorageStatement* GetStatementById(
+     enum mozilla::places::HistoryStatementId aStatementId
+   )
+   {
+     using namespace mozilla::places;
+     switch(aStatementId) {
+       case DB_GET_PAGE_INFO_BY_URL:
+         return mDBGetURLPageInfo;
+       case DB_GET_TAGS:
+         return mDBGetTags;
+       case DB_IS_PAGE_VISITED:
+         return mDBIsPageVisited;
++      case DB_INSERT_VISIT:
++        return mDBInsertVisit;
++      case DB_RECENT_VISIT_OF_URL:
++        return mDBRecentVisitOfURL;
++      case DB_GET_PAGE_VISIT_STATS:
++        return mDBGetPageVisitStats;
++      case DB_UPDATE_PAGE_VISIT_STATS:
++        return mDBUpdatePageVisitStats;
++      case DB_ADD_NEW_PAGE:
++        return mDBAddNewPage;
+     }
+     return nsnull;
+   }
+ 
++  PRInt64 GetNewSessionID();
++
+ private:
+   ~nsNavHistory();
+ 
+   // used by GetHistoryService
+   static nsNavHistory *gHistoryService;
+ 
+ protected:
+ 
+@@ -678,17 +720,16 @@ protected:
+   RedirectHash mRecentRedirects;
+   static PLDHashOperator ExpireNonrecentRedirects(
+       nsCStringHashKey::KeyType aKey, RedirectInfo& aData, void* aUserArg);
+   PRBool GetRedirectFor(const nsACString& aDestination, nsACString& aSource,
+                         PRTime* aTime, PRUint32* aRedirectType);
+ 
+   // Sessions tracking.
+   PRInt64 mLastSessionID;
+-  PRInt64 GetNewSessionID();
+ 
+ #ifdef MOZ_XUL
+   // AutoComplete stuff
+   mozIStorageStatement *GetDBFeedbackIncrease();
+   nsCOMPtr<mozIStorageStatement> mDBFeedbackIncrease;
+ 
+   nsresult AutoCompleteFeedback(PRInt32 aIndex,
+                                 nsIAutoCompleteController *aController);
+diff --git a/toolkit/components/places/tests/cpp/places_test_harness.h b/toolkit/components/places/tests/cpp/places_test_harness.h
+--- a/toolkit/components/places/tests/cpp/places_test_harness.h
++++ b/toolkit/components/places/tests/cpp/places_test_harness.h
+@@ -42,16 +42,19 @@
+ #include "nsThreadUtils.h"
+ #include "nsNetUtil.h"
+ #include "nsDocShellCID.h"
+ 
+ #include "nsToolkitCompsCID.h"
+ #include "nsINavHistoryService.h"
+ #include "nsIObserverService.h"
+ #include "mozilla/IHistory.h"
++#include "mozIStorageConnection.h"
++#include "mozIStorageStatement.h"
++#include "nsPIPlacesDatabase.h"
+ 
+ using namespace mozilla;
+ 
+ static size_t gTotalTests = 0;
+ static size_t gPassedTests = 0;
+ 
+ #define do_check_true(aCondition) \
+   PR_BEGIN_MACRO \
+@@ -112,15 +115,118 @@ addURI(nsIURI* aURI)
+ 
+   PRInt64 id;
+   nsresult rv = hist->AddVisit(aURI, PR_Now(), nsnull,
+                                nsINavHistoryService::TRANSITION_LINK, PR_FALSE,
+                                0, &id);
+   do_check_success(rv);
+ }
+ 
++struct PlaceRecord
++{
++  PRInt64 id;
++  PRInt32 hidden;
++  PRInt32 typed;
++  PRInt32 visitCount;
++};
++
++struct VisitRecord
++{
++  PRInt64 id;
++  PRInt64 lastVisitId;
++  PRInt32 transitionType;
++};
++
+ already_AddRefed<IHistory>
+ do_get_IHistory()
+ {
+   nsCOMPtr<IHistory> history = do_GetService(NS_IHISTORY_CONTRACTID);
+   do_check_true(history);
+   return history.forget();
+ }
++
++already_AddRefed<nsINavHistoryService>
++do_get_NavHistory()
++{
++  nsCOMPtr<nsINavHistoryService> serv =
++    do_GetService(NS_NAVHISTORYSERVICE_CONTRACTID);
++  do_check_true(serv);
++  return serv.forget();
++}
++
++already_AddRefed<mozIStorageConnection>
++do_get_mozIStorageConnection()
++{
++  nsCOMPtr<nsINavHistoryService> history = do_get_NavHistory();
++  nsCOMPtr<nsPIPlacesDatabase> database = do_QueryInterface(history);
++  do_check_true(database);
++
++  mozIStorageConnection* dbConn;
++  nsresult rv = database->GetDBConnection(&dbConn);
++  do_check_true(NS_SUCCEEDED(rv));
++  return dbConn;
++}
++
++void
++getPlace(nsIURI* aURI, PlaceRecord& result)
++{
++  nsCOMPtr<mozIStorageConnection> dbConn = do_get_mozIStorageConnection();
++  nsCOMPtr<mozIStorageStatement> stmt;
++  nsCString spec;
++
++  nsresult rv = aURI->GetSpec(spec);
++  do_check_true(NS_SUCCEEDED(rv));
++
++  rv = dbConn->CreateStatement(NS_LITERAL_CSTRING(
++    "SELECT id, hidden, typed, visit_count FROM moz_places WHERE url=?1 "
++    "UNION ALL "
++    "SELECT id, hidden, typed, visit_count FROM moz_places_temp WHERE url=?1 "
++    "LIMIT 1"
++  ), getter_AddRefs(stmt));
++  do_check_true(NS_SUCCEEDED(rv));
++
++  rv = stmt->BindUTF8StringParameter(0, spec);
++  do_check_true(NS_SUCCEEDED(rv));
++
++  PRBool hasResults;
++  rv = stmt->ExecuteStep(&hasResults);
++  do_check_true(hasResults);
++  do_check_true(NS_SUCCEEDED(rv));
++
++  rv = stmt->GetInt64(0, &result.id);
++  do_check_true(NS_SUCCEEDED(rv));
++  rv = stmt->GetInt32(1, &result.hidden);
++  do_check_true(NS_SUCCEEDED(rv));
++  rv = stmt->GetInt32(2, &result.typed);
++  do_check_true(NS_SUCCEEDED(rv));
++  rv = stmt->GetInt32(3, &result.visitCount);
++  do_check_true(NS_SUCCEEDED(rv));
++}
++
++void
++getLastVisit(PRInt64 placeId, VisitRecord& result)
++{
++  nsCOMPtr<mozIStorageConnection> dbConn = do_get_mozIStorageConnection();
++  nsCOMPtr<mozIStorageStatement> stmt;
++
++  nsresult rv = dbConn->CreateStatement(NS_LITERAL_CSTRING(
++    "SELECT id, from_visit, visit_type FROM moz_historyvisits WHERE place_id=?1 "
++    "UNION ALL "
++    "SELECT id, from_visit, visit_type FROM moz_historyvisits_temp WHERE place_id=?1 "
++    "LIMIT 1"
++  ), getter_AddRefs(stmt));
++  do_check_true(rv == NS_OK);
++
++  rv = stmt->BindInt64Parameter(0, placeId);
++  do_check_true(rv == NS_OK);
++
++  PRBool hasResults;
++  rv = stmt->ExecuteStep(&hasResults);
++  do_check_true(hasResults);
++  do_check_true(rv == NS_OK);
++
++  rv = stmt->GetInt64(0, &result.id);
++  do_check_true(rv == NS_OK);
++  rv = stmt->GetInt64(1, &result.lastVisitId);
++  do_check_true(rv == NS_OK);
++  rv = stmt->GetInt32(2, &result.transitionType);
++  do_check_true(rv == NS_OK);
++}
+diff --git a/toolkit/components/places/tests/cpp/test_IHistory.cpp b/toolkit/components/places/tests/cpp/test_IHistory.cpp
+--- a/toolkit/components/places/tests/cpp/test_IHistory.cpp
++++ b/toolkit/components/places/tests/cpp/test_IHistory.cpp
+@@ -33,16 +33,17 @@
+  * decision by deleting the provisions above and replace them with the notice
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ #include "places_test_harness.h"
++#include "nsIBrowserHistory.h"
+ 
+ #include "mock_Link.h"
+ using namespace mozilla::dom;
+ 
+ /**
+  * This file tests the IHistory interface.
+  */
+ 
+@@ -358,29 +359,227 @@ test_observer_topic_dispatched()
+ 
+   // Unregister our observer that would not have been released.
+   rv = history->UnregisterVisitedCallback(notVisitedURI, notVisitedLink);
+   do_check_success(rv);
+ 
+   run_next_test();
+ }
+ 
++
++class VisitURIFinishObserver : public nsIObserver
++{
++public:
++  NS_DECL_ISUPPORTS
++
++  VisitURIFinishObserver(int totalVisits = 1) :
++    mVisits(0),
++    mTotalVisits(totalVisits)
++  {
++    nsCOMPtr<nsIObserverService> observerService =
++      do_GetService(NS_OBSERVERSERVICE_CONTRACTID);
++    do_check_true(observerService);
++    (void)observerService->AddObserver(this,
++                                       "uri-visit-saved",
++                                       PR_FALSE);
++  }
++
++  ~VisitURIFinishObserver()
++  {
++  }
++
++  void MainEventLoop()
++  {
++    while (mVisits < mTotalVisits) {
++      (void)NS_ProcessNextEvent();
++    }
++  }
++
++  NS_IMETHOD Observe(nsISupports* aSubject,
++                     const char* aTopic,
++                     const PRUnichar* aData)
++  {
++    mVisits++;
++
++    if (mVisits == mTotalVisits) {
++      nsCOMPtr<nsIObserverService> observerService =
++        do_GetService(NS_OBSERVERSERVICE_CONTRACTID);
++      (void)observerService->RemoveObserver(this, "uri-visit-saved");
++    }
++
++    return NS_OK;
++  }
++private:
++  int mVisits;
++  int mTotalVisits;
++};
++NS_IMPL_ISUPPORTS1(
++  VisitURIFinishObserver,
++  nsIObserver
++)
++
++void
++test_visituri_inserts()
++{
++  nsCOMPtr<IHistory> history(do_get_IHistory());
++  nsCOMPtr<nsIURI> lastURI(new_test_uri());
++  nsCOMPtr<nsIURI> visitedURI(new_test_uri());
++
++  history->VisitURI(visitedURI, lastURI, mozilla::IHistory::TOP_LEVEL, NULL);
++
++  nsCOMPtr<VisitURIFinishObserver> finisher = new VisitURIFinishObserver();
++  finisher->MainEventLoop();
++
++  PlaceRecord place;
++  getPlace(visitedURI, place);
++
++  do_check_true(place.id > 0);
++  do_check_true(!place.hidden);
++  do_check_true(!place.typed);
++  do_check_true(place.visitCount == 1);
++
++  run_next_test();
++}
++
++void
++test_visituri_updates()
++{
++  nsCOMPtr<IHistory> history(do_get_IHistory());
++  nsCOMPtr<nsIURI> lastURI(new_test_uri());
++  nsCOMPtr<nsIURI> visitedURI(new_test_uri());
++  nsCOMPtr<VisitURIFinishObserver> finisher;
++
++  history->VisitURI(visitedURI, lastURI, mozilla::IHistory::TOP_LEVEL, NULL);
++  finisher = new VisitURIFinishObserver();
++  finisher->MainEventLoop();
++
++  history->VisitURI(visitedURI, lastURI, mozilla::IHistory::TOP_LEVEL, NULL);
++  finisher = new VisitURIFinishObserver();
++  finisher->MainEventLoop();
++
++  PlaceRecord place;
++  getPlace(visitedURI, place);
++
++  do_check_true(place.visitCount == 2);
++
++  run_next_test();
++}
++
++void
++test_visituri_preserves_shown_and_typed()
++{
++  nsCOMPtr<IHistory> history(do_get_IHistory());
++  nsCOMPtr<nsIURI> lastURI(new_test_uri());
++  nsCOMPtr<nsIURI> visitedURI(new_test_uri());
++
++  history->VisitURI(visitedURI, lastURI, mozilla::IHistory::TOP_LEVEL, NULL);
++  // this simulates the uri visit happening in a frame.  Normally frame
++  // transitions would be hidden unless it was previously loaded top-level
++  history->VisitURI(visitedURI, lastURI, 0, NULL);
++
++  nsCOMPtr<VisitURIFinishObserver> finisher = new VisitURIFinishObserver(2);
++  finisher->MainEventLoop();
++
++  PlaceRecord place;
++  getPlace(visitedURI, place);
++  do_check_true(!place.hidden);
++
++  run_next_test();
++}
++
++void
++test_visituri_creates_visit()
++{
++  nsCOMPtr<IHistory> history(do_get_IHistory());
++  nsCOMPtr<nsIURI> lastURI(new_test_uri());
++  nsCOMPtr<nsIURI> visitedURI(new_test_uri());
++
++  history->VisitURI(visitedURI, lastURI, mozilla::IHistory::TOP_LEVEL, NULL);
++  nsCOMPtr<VisitURIFinishObserver> finisher = new VisitURIFinishObserver();
++  finisher->MainEventLoop();
++
++  PlaceRecord place;
++  VisitRecord visit;
++  getPlace(visitedURI, place);
++  getLastVisit(place.id, visit);
++
++  do_check_true(visit.id > 0);
++  do_check_true(visit.lastVisitId == 0);
++  do_check_true(visit.transitionType == nsINavHistoryService::TRANSITION_LINK);
++
++  run_next_test();
++}
++
++void
++test_visituri_transition_typed()
++{
++  nsCOMPtr<nsIBrowserHistory> browserHistory =
++    do_QueryInterface((nsCOMPtr<nsINavHistoryService>) do_get_NavHistory());
++  nsCOMPtr<IHistory> history(do_get_IHistory());
++  nsCOMPtr<nsIURI> lastURI(new_test_uri());
++  nsCOMPtr<nsIURI> visitedURI(new_test_uri());
++
++  browserHistory->MarkPageAsTyped(visitedURI);
++  history->VisitURI(visitedURI, lastURI, mozilla::IHistory::TOP_LEVEL, NULL);
++  nsCOMPtr<VisitURIFinishObserver> finisher = new VisitURIFinishObserver();
++  finisher->MainEventLoop();
++
++  PlaceRecord place;
++  VisitRecord visit;
++  getPlace(visitedURI, place);
++  getLastVisit(place.id, visit);
++
++  do_check_true(visit.transitionType == nsINavHistoryService::TRANSITION_TYPED);
++
++  run_next_test();
++}
++
++void
++test_visituri_transition_embed()
++{
++  nsCOMPtr<nsIBrowserHistory> browserHistory =
++    do_QueryInterface((nsCOMPtr<nsINavHistoryService>) do_get_NavHistory());
++  nsCOMPtr<IHistory> history(do_get_IHistory());
++  nsCOMPtr<nsIURI> lastURI(new_test_uri());
++  nsCOMPtr<nsIURI> visitedURI(new_test_uri());
++
++  history->VisitURI(visitedURI, lastURI, 0, NULL);
++  nsCOMPtr<VisitURIFinishObserver> finisher = new VisitURIFinishObserver();
++  finisher->MainEventLoop();
++
++  PlaceRecord place;
++  VisitRecord visit;
++  getPlace(visitedURI, place);
++  getLastVisit(place.id, visit);
++
++  do_check_true(visit.transitionType == nsINavHistoryService::TRANSITION_EMBED);
++
++  run_next_test();
++}
++
+ ////////////////////////////////////////////////////////////////////////////////
+ //// Test Harness
+ 
+ /**
+  * Note: for tests marked "Order Important!", please see the test for details.
+  */
+ Test gTests[] = {
+   TEST(test_unvisted_does_not_notify_part1), // Order Important!
+   TEST(test_visited_notifies),
+   TEST(test_unvisted_does_not_notify_part2), // Order Important!
+   TEST(test_same_uri_notifies_both),
+   TEST(test_unregistered_visited_does_not_notify), // Order Important!
+   TEST(test_new_visit_notifies_waiting_Link),
+   TEST(test_RegisterVisitedCallback_returns_before_notifying),
+   TEST(test_observer_topic_dispatched),
++
++  TEST(test_visituri_inserts),
++  TEST(test_visituri_updates),
++  TEST(test_visituri_preserves_shown_and_typed),
++  TEST(test_visituri_creates_visit),
++  TEST(test_visituri_transition_typed),
++  TEST(test_visituri_transition_embed),
+ };
+ 
+ const char* file = __FILE__;
+ #define TEST_NAME "IHistory"
+ #define TEST_FILE file
+ #include "places_test_harness_tail.h"

@@ -1,0 +1,219 @@
+diff --git a/dom/ipc/ContentProcessChild.cpp b/dom/ipc/ContentProcessChild.cpp
+--- a/dom/ipc/ContentProcessChild.cpp
++++ b/dom/ipc/ContentProcessChild.cpp
+@@ -147,16 +147,27 @@ ContentProcessChild::RecvRegisterChrome(
+ {
+     nsCOMPtr<nsIChromeRegistry> registrySvc = nsChromeRegistry::GetService();
+     nsChromeRegistryContent* chromeRegistry =
+         static_cast<nsChromeRegistryContent*>(registrySvc.get());
+     chromeRegistry->RegisterRemoteChrome(packages, resources, overrides);
+     return true;
+ }
+ 
++bool
++ContentProcessChild::RecvSetOffline(const PRBool& offline)
++{
++  nsCOMPtr<nsIIOService> io (do_GetIOService());
++  NS_ASSERTION(io, "IO Service can not be null");
++
++  io->SetOffline(offline);
++    
++  return true;
++}
++
+ void
+ ContentProcessChild::Quit()
+ {
+     NS_ASSERTION(mQuit, "Exiting uncleanly!");
+     mIFrames.Clear();
+     mTestShells.Clear();
+ }
+ 
+diff --git a/dom/ipc/ContentProcessChild.h b/dom/ipc/ContentProcessChild.h
+--- a/dom/ipc/ContentProcessChild.h
++++ b/dom/ipc/ContentProcessChild.h
+@@ -78,16 +78,18 @@ public:
+ 
+     virtual PNeckoChild* AllocPNecko();
+     virtual bool DeallocPNecko(PNeckoChild*);
+ 
+     virtual bool RecvRegisterChrome(const nsTArray<ChromePackage>& packages,
+                                     const nsTArray<ResourceMapping>& resources,
+                                     const nsTArray<OverrideMapping>& overrides);
+ 
++    virtual bool RecvSetOffline(const PRBool& offline);
++
+ private:
+     NS_OVERRIDE
+     virtual void ActorDestroy(ActorDestroyReason why);
+ 
+     void Quit();
+ 
+     static ContentProcessChild* sSingleton;
+ 
+diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
+--- a/dom/ipc/ContentProcessParent.cpp
++++ b/dom/ipc/ContentProcessParent.cpp
+@@ -52,16 +52,18 @@
+ 
+ using namespace mozilla::ipc;
+ using namespace mozilla::net;
+ using mozilla::MonitorAutoEnter;
+ 
+ namespace mozilla {
+ namespace dom {
+ 
++#define NS_E10S_IOSERVICE_SET_OFFLINE_TOPIC "e10s:network:set-offline"
++
+ ContentProcessParent* ContentProcessParent::gSingleton;
+ 
+ ContentProcessParent*
+ ContentProcessParent::GetSingleton()
+ {
+     if (gSingleton && !gSingleton->IsAlive())
+         gSingleton = nsnull;
+     
+@@ -70,16 +72,18 @@ ContentProcessParent::GetSingleton()
+         if (parent) {
+             nsCOMPtr<nsIObserverService> obs =
+                 do_GetService("@mozilla.org/observer-service;1");
+             if (obs) {
+                 if (NS_SUCCEEDED(obs->AddObserver(parent, "xpcom-shutdown",
+                                                   PR_FALSE))) {
+                     gSingleton = parent;
+                 }
++                obs->AddObserver(
++                  parent, NS_IOSERVICE_SET_OFFLINE_TOPIC, PR_FALSE); 
+             }
+             nsCOMPtr<nsIThreadInternal>
+                 threadInt(do_QueryInterface(NS_GetCurrentThread()));
+             if (threadInt) {
+                 threadInt->GetObserver(getter_AddRefs(parent->mOldObserver));
+                 threadInt->SetObserver(parent);
+             }
+         }
+@@ -175,16 +179,22 @@ ContentProcessParent::Observe(nsISupport
+ {
+     if (!strcmp(aTopic, "xpcom-shutdown") && mSubprocess) {
+         Close();
+         XRE_GetIOMessageLoop()->PostTask(
+             FROM_HERE,
+             NewRunnableFunction(DeleteSubprocess, mSubprocess));
+         mSubprocess = nsnull;
+     }
++
++    if (!strcmp(aTopic, NS_IOSERVICE_SET_OFFLINE_TOPIC) && mSubprocess) {
++      NS_ConvertUTF16toUTF8 dataStr(aData);
++      const char *offline = dataStr.get();
++      SendSetOffline(!strcmp(offline, "true") ? true : false);
++    }
+     return NS_OK;
+ }
+ 
+ PIFrameEmbeddingParent*
+ ContentProcessParent::AllocPIFrameEmbedding()
+ {
+   TabParent* parent = new TabParent();
+   if (parent){
+diff --git a/dom/ipc/PContentProcess.ipdl b/dom/ipc/PContentProcess.ipdl
+--- a/dom/ipc/PContentProcess.ipdl
++++ b/dom/ipc/PContentProcess.ipdl
+@@ -59,14 +59,16 @@ rpc protocol PContentProcess
+ child:
+     PIFrameEmbedding();
+ 
+     PTestShell();
+ 
+     RegisterChrome(ChromePackage[] packages, ResourceMapping[] resources,
+                    OverrideMapping[] overrides);
+ 
++    async SetOffline(PRBool offline);
++
+ parent:
+     PNecko();
+ };
+ 
+ }
+ }
+diff --git a/netwerk/base/src/nsIOService.cpp b/netwerk/base/src/nsIOService.cpp
+--- a/netwerk/base/src/nsIOService.cpp
++++ b/netwerk/base/src/nsIOService.cpp
+@@ -69,16 +69,17 @@
+ #include "nsCRT.h"
+ #include "nsSimpleNestedURI.h"
+ #include "nsNetUtil.h"
+ #include "nsThreadUtils.h"
+ #include "nsIPermissionManager.h"
+ #include "nsTArray.h"
+ #include "nsIConsoleService.h"
+ #include "nsIUploadChannel2.h"
++#include "nsXULAppAPI.h"
+ 
+ #if defined(XP_WIN) || defined(MOZ_ENABLE_LIBCONIC)
+ #include "nsNativeConnectionHelper.h"
+ #endif
+ 
+ #define PORT_PREF_PREFIX           "network.security.ports."
+ #define PORT_PREF(x)               PORT_PREF_PREFIX x
+ #define AUTODIAL_PREF              "network.autodial-helper.enabled"
+@@ -657,21 +658,35 @@ nsIOService::SetOffline(PRBool offline)
+     // SetOffline() may re-enter while it's shutting down services.
+     // If that happens, save the most recent value and it will be
+     // processed when the first SetOffline() call is done bringing
+     // down the service.
+     mSetOfflineValue = offline;
+     if (mSettingOffline) {
+         return NS_OK;
+     }
++
+     mSettingOffline = PR_TRUE;
+ 
+     nsCOMPtr<nsIObserverService> observerService =
+         do_GetService("@mozilla.org/observer-service;1");
+ 
++    NS_ASSERTION(observerService, "The observer service should not be null");
++
++#ifdef MOZ_IPC
++    if (XRE_GetProcessType() == GeckoProcessType_Default) {
++        if (observerService) {
++            (void)observerService->NotifyObservers(nsnull,
++                NS_IOSERVICE_SET_OFFLINE_TOPIC, offline ? 
++                NS_LITERAL_STRING("true").get() :
++                NS_LITERAL_STRING("false").get());
++        }
++    }
++#endif
++
+     while (mSetOfflineValue != mOffline) {
+         offline = mSetOfflineValue;
+ 
+         nsresult rv;
+         if (offline && !mOffline) {
+             NS_NAMED_LITERAL_STRING(offlineString, NS_IOSERVICE_OFFLINE);
+             mOffline = PR_TRUE; // indicate we're trying to shutdown
+ 
+diff --git a/netwerk/base/src/nsIOService.h b/netwerk/base/src/nsIOService.h
+--- a/netwerk/base/src/nsIOService.h
++++ b/netwerk/base/src/nsIOService.h
+@@ -55,16 +55,21 @@
+ #include "nsINetUtil.h"
+ #include "nsIChannelEventSink.h"
+ #include "nsIContentSniffer.h"
+ #include "nsCategoryCache.h"
+ #include "nsINetworkLinkService.h"
+ 
+ #define NS_N(x) (sizeof(x)/sizeof(*x))
+ 
++// We don't want to expose this observer topic.
++// Intended internal use only for remoting offline/inline events.
++// See Bug 552829
++#define NS_E10S_IOSERVICE_SET_OFFLINE_TOPIC "e10s:network:set-offline"
++
+ static const char gScheme[][sizeof("resource")] =
+     {"chrome", "file", "http", "jar", "resource"};
+ 
+ class nsIPrefBranch;
+ class nsIPrefBranch2;
+ 
+ class nsIOService : public nsIIOService2
+                   , public nsIObserver

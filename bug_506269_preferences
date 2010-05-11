@@ -1,0 +1,1244 @@
+diff --git a/dom/ipc/ContentProcessChild.cpp b/dom/ipc/ContentProcessChild.cpp
+--- a/dom/ipc/ContentProcessChild.cpp
++++ b/dom/ipc/ContentProcessChild.cpp
+@@ -41,16 +41,17 @@
+ 
+ #include "mozilla/ipc/TestShellChild.h"
+ #include "mozilla/net/NeckoChild.h"
+ #include "mozilla/ipc/XPCShellEnvironment.h"
+ #include "mozilla/jsipc/PContextWrapperChild.h"
+ 
+ #include "nsXULAppAPI.h"
+ 
++#include "nsServiceManagerUtils.h"
+ #include "base/message_loop.h"
+ #include "base/task.h"
+ 
+ #include "nsChromeRegistryContent.h"
+ #include "mozilla/chrome/RegistryMessageUtils.h"
+ 
+ using namespace mozilla::ipc;
+ using namespace mozilla::net;
+@@ -71,18 +72,18 @@ ContentProcessChild::~ContentProcessChil
+ 
+ bool
+ ContentProcessChild::Init(MessageLoop* aIOLoop,
+                           base::ProcessHandle aParentHandle,
+                           IPC::Channel* aChannel)
+ {
+     NS_ASSERTION(!sSingleton, "only one ContentProcessChild per child");
+   
++    sSingleton = this;
+     Open(aChannel, aParentHandle, aIOLoop);
+-    sSingleton = this;
+ 
+     return true;
+ }
+ 
+ PIFrameEmbeddingChild*
+ ContentProcessChild::AllocPIFrameEmbedding()
+ {
+   nsRefPtr<TabChild> iframe = new TabChild();
+@@ -164,24 +165,115 @@ ContentProcessChild::RecvSetOffline(cons
+ }
+ 
+ void
+ ContentProcessChild::Quit()
+ {
+     NS_ASSERTION(mQuit, "Exiting uncleanly!");
+     mIFrames.Clear();
+     mTestShells.Clear();
++    ClearPrefObservers();
+ }
+ 
+ void
+ ContentProcessChild::ActorDestroy(ActorDestroyReason why)
+ {
+     if (AbnormalShutdown == why)
+         NS_WARNING("shutting down because of crash!");
+ 
+     mQuit = PR_TRUE;
+     Quit();
+ 
+     XRE_ShutdownChildProcess();
+ }
+ 
++nsresult
++ContentProcessChild::AddRemotePrefObserver(nsCString aDomain, 
++                                           nsCString aPrefRoot, 
++                                           nsIObserver *aObserver, 
++                                           PRBool aHoldWeak)
++{
++    // keep references to remote observers
++    if (aHoldWeak) {
++        nsCOMPtr<nsISupportsWeakReference> weakRefFactory = 
++                                                 do_QueryInterface(aObserver);
++        if (!weakRefFactory) {
++            // the caller didn't give us an object that supports weak reference
++            return NS_ERROR_INVALID_ARG;
++        }
++    }
++    nsPrefObserverStorage* newObserver = 
++        new nsPrefObserverStorage(aObserver, aDomain, aPrefRoot, aHoldWeak);
++
++    if (!newObserver)
++        return NS_ERROR_OUT_OF_MEMORY;
++
++    if (!mPrefObserverArray.AppendElement(newObserver))
++        return NS_ERROR_FAILURE;
++
++    return NS_OK;
++}
++
++nsresult
++ContentProcessChild::RemoveRemotePrefObserver(nsCString aDomain, 
++                                              nsCString aPrefRoot, 
++                                              nsIObserver *aObserver)
++{
++    int i=0;
++    if (mPrefObserverArray.IsEmpty())
++        return NS_OK;
++
++    // need to find the index of observer, 
++    // so we can remove it from the domain list too
++    nsPrefObserverStorage *entry;
++    while (i < mPrefObserverArray.Length()) {
++        entry = mPrefObserverArray[i];
++        if (entry && entry->GetObserver() == aObserver &&
++                     entry->GetDomain().Equals(aDomain)) {
++            // Remove this observer from our array
++            mPrefObserverArray.RemoveElementAt(i);
++            delete entry;
++            i--;
++        }
++        i++;
++    }
++    return NS_OK;
++}
++
++nsresult
++ContentProcessChild::ClearPrefObservers()
++{
++    nsPrefObserverStorage *entry;
++    // no need to enumerate the entries... it's faster to delete from the end
++    for (int i=mPrefObserverArray.Length()-1;i>=0;i--) {
++        entry = mPrefObserverArray[i];
++        mPrefObserverArray.RemoveElementAt(i);
++        delete entry;
++    }
++    return true;
++}
++
++bool
++ContentProcessChild::RecvNotifyRemotePrefObserver(
++        const nsCString& aDomain)
++{
++    int i=0;
++    nsPrefObserverStorage *entry;
++    while (i < mPrefObserverArray.Length()) {
++        entry = mPrefObserverArray[i];
++        nsCString prefName(entry->GetPrefRoot() + entry->GetDomain());
++        // aDomain here is returned from our global pref observer from parent
++        // so it's really a full pref name (i.e. root + domain)
++        if (StringBeginsWith(aDomain, prefName)) {
++            if (!entry->NotifyObserver()) {
++                // remove the observer from the list
++                mPrefObserverArray.RemoveElementAt(i);
++                delete entry;
++                i--;
++            }
++        }
++        i++;
++    }
++    return true;
++}
++
+ } // namespace dom
+ } // namespace mozilla
+diff --git a/dom/ipc/ContentProcessChild.h b/dom/ipc/ContentProcessChild.h
+--- a/dom/ipc/ContentProcessChild.h
++++ b/dom/ipc/ContentProcessChild.h
+@@ -36,32 +36,105 @@
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ #ifndef mozilla_dom_ContentProcessChild_h
+ #define mozilla_dom_ContentProcessChild_h
+ 
+ #include "mozilla/dom/PContentProcessChild.h"
+ 
++#include "nsIObserverService.h"
++#include "nsTObserverArray.h"
++#include "nsIObserver.h"
++#include "nsIPrefService.h"
++#include "nsIPrefBranch.h"
++#include "nsServiceManagerUtils.h"
+ #include "nsTArray.h"
+ #include "nsAutoPtr.h"
++#include "nsWeakReference.h"
+ 
+ struct ChromePackage;
+ struct ResourceMapping;
+ struct OverrideMapping;
+ 
+ namespace mozilla {
+ namespace dom {
+ 
+ class ContentProcessChild : public PContentProcessChild
+ {
+ public:
+     ContentProcessChild();
+     virtual ~ContentProcessChild();
+ 
++    class nsPrefObserverStorage {
++    public:
++        nsPrefObserverStorage(nsIObserver *aObserver, nsCString aDomain,
++                              nsCString aPrefRoot, bool aHoldWeak) {
++            MOZ_COUNT_CTOR(nsPrefObserverStorage);
++            mDomain = aDomain;
++            mPrefRoot = aPrefRoot;
++            mObserver = aObserver;
++            if (aHoldWeak) {
++                nsCOMPtr<nsISupportsWeakReference> weakRefFactory = 
++                                           do_QueryInterface(aObserver);
++                nsCOMPtr<nsIWeakReference> tmp = 
++                                           do_GetWeakReference(weakRefFactory);
++                NS_ADDREF(this->mWeakRef = tmp);
++            } else {
++                this->mWeakRef = nsnull;
++                NS_ADDREF(this->mObserver);
++            }
++        }
++
++        ~nsPrefObserverStorage() {
++            MOZ_COUNT_DTOR(nsPrefObserverStorage);
++            if (mWeakRef) {
++                NS_RELEASE(mWeakRef);
++            } else {
++                NS_RELEASE(mObserver);
++            }
++        }
++
++        bool NotifyObserver() {
++            nsCOMPtr<nsIObserver> observer;
++            if (this->mWeakRef) {
++                observer = do_QueryReferent(this->mWeakRef);
++                if (!observer) {
++                    // this weak referenced observer went away, tell
++                    // the caller so he can remove the observer from the list
++                    return false;
++                }
++            } else {
++                observer = this->mObserver;
++            }
++
++            nsCOMPtr<nsIPrefBranch> prefBranch;
++            nsCOMPtr<nsIPrefService> prefService = 
++                                      do_GetService(NS_PREFSERVICE_CONTRACTID);
++            if (prefService) {
++                prefService->GetBranch(this->mPrefRoot.get(), 
++                                                   getter_AddRefs(prefBranch));
++                observer->Observe(prefBranch, "nsPref:changed",
++                                   NS_ConvertUTF8toUTF16(this->mDomain).get());
++            }
++            return true;
++        }
++
++        nsIObserver* GetObserver() {return mObserver;}
++        nsIWeakReference* GetWeakRef()  {return mWeakRef;}
++        nsCString GetDomain() {return mDomain;}
++        nsCString GetPrefRoot() {return mPrefRoot;}
++
++    private:
++        nsIObserver *mObserver;
++        nsIWeakReference *mWeakRef;
++        nsCString mPrefRoot;
++        nsCString mDomain;
++    };
++
+     bool Init(MessageLoop* aIOLoop,
+               base::ProcessHandle aParentHandle,
+               IPC::Channel* aChannel);
+ 
+     static ContentProcessChild* GetSingleton() {
+         NS_ASSERTION(sSingleton, "not initialized");
+         return sSingleton;
+     }
+@@ -80,28 +153,40 @@ public:
+     virtual bool DeallocPNecko(PNeckoChild*);
+ 
+     virtual bool RecvRegisterChrome(const nsTArray<ChromePackage>& packages,
+                                     const nsTArray<ResourceMapping>& resources,
+                                     const nsTArray<OverrideMapping>& overrides);
+ 
+     virtual bool RecvSetOffline(const PRBool& offline);
+ 
++    nsresult AddRemotePrefObserver(nsCString aDomain, nsCString aPrefRoot, 
++                                   nsIObserver *aObserver, PRBool aHoldWeak);
++    nsresult RemoveRemotePrefObserver(nsCString aDomain, nsCString aPrefRoot, 
++                                      nsIObserver *aObserver);
++    nsresult ClearPrefObservers();
++
++    virtual bool RecvNotifyRemotePrefObserver(
++            const nsCString& aDomain);
++    
++
++
+ private:
+     NS_OVERRIDE
+     virtual void ActorDestroy(ActorDestroyReason why);
+ 
+     void Quit();
+ 
+     static ContentProcessChild* sSingleton;
+ 
+     nsTArray<PIFrameEmbeddingChild* > mIFrames;
+     nsTArray<nsAutoPtr<PTestShellChild> > mTestShells;
+ 
+     PRBool mQuit;
++    nsTArray<nsPrefObserverStorage*> mPrefObserverArray;
+ 
+     DISALLOW_EVIL_CONSTRUCTORS(ContentProcessChild);
+ };
+ 
+ } // namespace dom
+ } // namespace mozilla
+ 
+ #endif
+diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
+--- a/dom/ipc/ContentProcessParent.cpp
++++ b/dom/ipc/ContentProcessParent.cpp
+@@ -36,17 +36,20 @@
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ #include "ContentProcessParent.h"
+ 
+ #include "TabParent.h"
+ #include "mozilla/ipc/TestShellParent.h"
+ #include "mozilla/net/NeckoParent.h"
+-
++#include "nsIPrefBranch.h"
++#include "nsIPrefBranch2.h"
++#include "nsISecurityPref.h"
++#include "nsIPrefService.h"
+ #include "nsIObserverService.h"
+ 
+ #include "nsAutoPtr.h"
+ #include "nsCOMPtr.h"
+ #include "nsServiceManagerUtils.h"
+ #include "nsThreadUtils.h"
+ #include "nsChromeRegistryChrome.h"
+ 
+@@ -71,16 +74,21 @@ ContentProcessParent::GetSingleton()
+         nsRefPtr<ContentProcessParent> parent = new ContentProcessParent();
+         if (parent) {
+             nsCOMPtr<nsIObserverService> obs =
+                 do_GetService("@mozilla.org/observer-service;1");
+             if (obs) {
+                 if (NS_SUCCEEDED(obs->AddObserver(parent, "xpcom-shutdown",
+                                                   PR_FALSE))) {
+                     gSingleton = parent;
++                    nsCOMPtr<nsIPrefBranch2> prefs 
++                        (do_GetService(NS_PREFSERVICE_CONTRACTID));
++                    if (prefs) {  
++                        prefs->AddObserver("", parent, PR_FALSE);
++                    }
+                 }
+                 obs->AddObserver(
+                   parent, NS_IOSERVICE_SET_OFFLINE_TOPIC, PR_FALSE); 
+             }
+             nsCOMPtr<nsIThreadInternal>
+                 threadInt(do_QueryInterface(NS_GetCurrentThread()));
+             if (threadInt) {
+                 threadInt->GetObserver(getter_AddRefs(parent->mOldObserver));
+@@ -155,16 +163,155 @@ ContentProcessParent::~ContentProcessPar
+ }
+ 
+ bool
+ ContentProcessParent::IsAlive()
+ {
+     return mIsAlive;
+ }
+ 
++bool
++ContentProcessParent::RecvGetPrefType(const nsCString& prefName,
++        PRInt32* retValue, nsresult* rv)
++{
++    nsCOMPtr<nsIPrefBranch> prefs(do_GetService(NS_PREFSERVICE_CONTRACTID));
++    if (prefs) {
++        *rv = prefs->GetPrefType(prefName.get(), retValue);
++    } else {
++        *rv = NS_ERROR_UNEXPECTED;
++    }
++    return true;
++}
++
++bool
++ContentProcessParent::RecvGetBoolPref(const nsCString& prefName,
++                                      PRBool* retValue, nsresult* rv)
++{
++    nsCOMPtr<nsIPrefBranch> prefs(do_GetService(NS_PREFSERVICE_CONTRACTID));
++    if (prefs) {
++        *rv = prefs->GetBoolPref(prefName.get(), retValue);
++    } else {
++        *rv = NS_ERROR_UNEXPECTED;
++    }
++    return true;
++}
++
++bool
++ContentProcessParent::RecvGetIntPref(const nsCString& prefName,
++                                     PRInt32* retValue, nsresult* rv)
++{
++    nsCOMPtr<nsIPrefBranch> prefs(do_GetService(NS_PREFSERVICE_CONTRACTID));
++    if (prefs) {
++        *rv = prefs->GetIntPref(prefName.get(), retValue);
++    } else {
++        *rv = NS_ERROR_UNEXPECTED;
++    }
++    return true;
++}
++
++bool
++ContentProcessParent::RecvGetCharPref(const nsCString& prefName,
++                                      nsCString* retValue, nsresult* rv)
++{
++    nsCOMPtr<nsIPrefBranch> prefs(do_GetService(NS_PREFSERVICE_CONTRACTID));
++    if (prefs) {
++        *rv = prefs->GetCharPref(prefName.get(), getter_Copies(*retValue));
++    } else {
++        *rv = NS_ERROR_UNEXPECTED;
++    }
++    return true;
++}
++
++bool
++ContentProcessParent::RecvPrefHasUserValue(const nsCString& prefName,
++        PRBool* retValue, nsresult* rv)
++{
++    nsCOMPtr<nsIPrefBranch> prefs(do_GetService(NS_PREFSERVICE_CONTRACTID));
++    if (prefs) {
++        *rv = prefs->PrefHasUserValue(prefName.get(), retValue);
++    } else {
++        *rv = NS_ERROR_UNEXPECTED;
++    }
++    return true;
++}
++
++bool
++ContentProcessParent::RecvPrefIsLocked(const nsCString& prefName,
++        PRBool* retValue, nsresult* rv)
++{
++    nsCOMPtr<nsIPrefBranch> prefs(do_GetService(NS_PREFSERVICE_CONTRACTID));
++    if (prefs) {
++        *rv = prefs->PrefIsLocked(prefName.get(), retValue);
++    } else {
++        *rv = NS_ERROR_UNEXPECTED;
++    }
++    return true;
++}
++
++bool
++ContentProcessParent::RecvSecurityGetBoolPref(const nsCString& prefName,
++                                  PRBool* retValue, nsresult* rv)
++{
++    nsCOMPtr<nsIPrefBranch> prefs;
++    nsCOMPtr<nsIPrefService> prefService = 
++                                     do_GetService(NS_PREFSERVICE_CONTRACTID);
++    if (prefService) {
++        prefService->GetBranch("", getter_AddRefs(prefs));
++        nsCOMPtr<nsISecurityPref> securityPref = do_QueryInterface(prefs, rv);
++        if (NS_SUCCEEDED(*rv)) {
++            // We shouldn't call nsISecurityPref functions from here,
++            // but we'll take the risk, as we know this is a remote pref!
++            *rv = securityPref->SecurityGetBoolPref(prefName.get(), retValue);
++            return true;
++        }
++    }
++    *rv = NS_ERROR_UNEXPECTED;
++    return true;
++}
++
++bool
++ContentProcessParent::RecvSecurityGetIntPref(const nsCString& prefName,
++                                  PRInt32* retValue, nsresult* rv)
++{
++    nsCOMPtr<nsIPrefBranch> prefs;
++    nsCOMPtr<nsIPrefService> prefService = do_GetService(NS_PREFSERVICE_CONTRACTID);
++    if (prefService) {
++        prefService->GetBranch("", getter_AddRefs(prefs));
++        nsCOMPtr<nsISecurityPref> securityPref = do_QueryInterface(prefs, rv);
++        if (NS_SUCCEEDED(*rv)) {
++            // We shouldn't call nsISecurityPref functions from here,
++            // but we'll take the risk, as we know this is a remote pref!
++            *rv = securityPref->SecurityGetIntPref(prefName.get(), retValue);
++            return true;
++        }
++    }
++    *rv = NS_ERROR_UNEXPECTED;
++    return true;
++}
++
++bool
++ContentProcessParent::RecvSecurityGetCharPref(const nsCString& prefName,
++                                  nsCString* retValue, nsresult* rv)
++{
++    nsCOMPtr<nsIPrefBranch> prefs;
++    nsCOMPtr<nsIPrefService> prefService = do_GetService(NS_PREFSERVICE_CONTRACTID);
++    if (prefService) {
++        prefService->GetBranch("", getter_AddRefs(prefs));
++        nsCOMPtr<nsISecurityPref> securityPref = do_QueryInterface(prefs, rv);
++        if (NS_SUCCEEDED(*rv)) {
++            // We shouldn't call nsISecurityPref functions from here,
++            // but we'll take the risk, as we know this is a remote pref!
++            *rv = securityPref->SecurityGetCharPref(prefName.get(), getter_Copies(*retValue));
++            return true;
++        }
++    }
++    *rv = NS_ERROR_UNEXPECTED;
++    return true;
++}
++
+ NS_IMPL_THREADSAFE_ISUPPORTS2(ContentProcessParent,
+                               nsIObserver,
+                               nsIThreadObserver)
+ 
+ namespace {
+ void
+ DeleteSubprocess(GeckoChildProcessHost* aSubprocess)
+ {
+@@ -173,28 +320,47 @@ DeleteSubprocess(GeckoChildProcessHost* 
+ }
+ 
+ NS_IMETHODIMP
+ ContentProcessParent::Observe(nsISupports* aSubject,
+                               const char* aTopic,
+                               const PRUnichar* aData)
+ {
+     if (!strcmp(aTopic, "xpcom-shutdown") && mSubprocess) {
++        // remove the global remote preferences observer
++        nsCOMPtr<nsIPrefBranch2> prefs 
++            (do_GetService(NS_PREFSERVICE_CONTRACTID));
++        if (prefs) { 
++            if (gSingleton) {
++                prefs->RemoveObserver("", gSingleton);
++            }
++        }
++
+         Close();
+         XRE_GetIOMessageLoop()->PostTask(
+             FROM_HERE,
+             NewRunnableFunction(DeleteSubprocess, mSubprocess));
+         mSubprocess = nsnull;
+     }
+ 
+     if (!strcmp(aTopic, NS_IOSERVICE_SET_OFFLINE_TOPIC) && mSubprocess) {
+       NS_ConvertUTF16toUTF8 dataStr(aData);
+       const char *offline = dataStr.get();
+       SendSetOffline(!strcmp(offline, "true") ? true : false);
+     }
++
++    // listening for remotePrefs...
++    if (!strcmp(aTopic, "nsPref:changed")) {
++        nsString wstrData(aData);
++        nsCString strData;
++        strData.Assign(NS_ConvertUTF16toUTF8(wstrData));
++
++        // TODO: get the prefNAme here and pass the whole prefName
++        SendNotifyRemotePrefObserver(strData);
++    }
+     return NS_OK;
+ }
+ 
+ PIFrameEmbeddingParent*
+ ContentProcessParent::AllocPIFrameEmbedding()
+ {
+   TabParent* parent = new TabParent();
+   if (parent){
+diff --git a/dom/ipc/ContentProcessParent.h b/dom/ipc/ContentProcessParent.h
+--- a/dom/ipc/ContentProcessParent.h
++++ b/dom/ipc/ContentProcessParent.h
+@@ -106,16 +106,44 @@ private:
+     virtual bool DeallocPIFrameEmbedding(PIFrameEmbeddingParent* frame);
+ 
+     virtual PTestShellParent* AllocPTestShell();
+     virtual bool DeallocPTestShell(PTestShellParent* shell);
+ 
+     virtual PNeckoParent* AllocPNecko();
+     virtual bool DeallocPNecko(PNeckoParent* necko);
+ 
++    virtual bool RecvGetPrefType(const nsCString& prefName,
++            PRInt32* retValue, nsresult* rv);
++
++    virtual bool RecvGetBoolPref(const nsCString& prefName,
++            PRBool* retValue, nsresult* rv);
++
++    virtual bool RecvGetIntPref(const nsCString& prefName,
++            PRInt32* retValue, nsresult* rv);
++
++    virtual bool RecvGetCharPref(const nsCString& prefName,
++            nsCString* retValue, nsresult* rv);
++
++    virtual bool RecvSecurityGetBoolPref(const nsCString& prefName,
++            PRBool* retValue, nsresult* rv);
++
++    virtual bool RecvSecurityGetIntPref(const nsCString& prefName,
++            PRInt32* retValue, nsresult* rv);
++
++    virtual bool RecvSecurityGetCharPref(const nsCString& prefName,
++            nsCString* retValue, nsresult* rv);
++
++    virtual bool RecvPrefHasUserValue(const nsCString& prefName,
++            PRBool* retValue, nsresult* rv);
++
++    virtual bool RecvPrefIsLocked(const nsCString& prefName,
++            PRBool* retValue, nsresult* rv);
++
++
+     mozilla::Monitor mMonitor;
+ 
+     GeckoChildProcessHost* mSubprocess;
+ 
+     int mRunToCompletionDepth;
+     bool mShouldCallUnblockChild;
+     nsCOMPtr<nsIThreadObserver> mOldObserver;
+ 
+diff --git a/dom/ipc/ContentProcessThread.cpp b/dom/ipc/ContentProcessThread.cpp
+--- a/dom/ipc/ContentProcessThread.cpp
++++ b/dom/ipc/ContentProcessThread.cpp
+@@ -60,22 +60,23 @@ ContentProcessThread::ContentProcessThre
+ ContentProcessThread::~ContentProcessThread()
+ {
+ }
+ 
+ void
+ ContentProcessThread::Init()
+ {
+     MozillaChildThread::Init();
++
++    // FIXME owner_loop() is bad here
++    mContentProcess.Init(owner_loop(), GetParentProcessHandle(), channel());
++
+     mXREEmbed.Start();
+ 
+     // FIXME/cjones: set up channel stuff, etc.
+-    
+-    // FIXME owner_loop() is bad here
+-    mContentProcess.Init(owner_loop(), GetParentProcessHandle(), channel());
+ }
+ 
+ void
+ ContentProcessThread::CleanUp()
+ {
+     mXREEmbed.Stop();
+     MozillaChildThread::CleanUp();
+ }
+diff --git a/dom/ipc/PContentProcess.ipdl b/dom/ipc/PContentProcess.ipdl
+--- a/dom/ipc/PContentProcess.ipdl
++++ b/dom/ipc/PContentProcess.ipdl
+@@ -61,14 +61,27 @@ child:
+ 
+     PTestShell();
+ 
+     RegisterChrome(ChromePackage[] packages, ResourceMapping[] resources,
+                    OverrideMapping[] overrides);
+ 
+     async SetOffline(PRBool offline);
+ 
++    NotifyRemotePrefObserver(nsCString aDomain);
++
+ parent:
+     PNecko();
++
++    // prefs-related messages ...
++    sync GetPrefType(nsCString prefName) returns (PRInt32 retValue, nsresult rv);
++    sync GetBoolPref(nsCString prefName) returns (PRBool retValue, nsresult rv);
++    sync GetIntPref(nsCString prefName)  returns (PRInt32 retValue, nsresult rv);
++    sync GetCharPref(nsCString prefName) returns (nsCString retValue, nsresult rv);
++    sync SecurityGetBoolPref(nsCString prefName) returns (PRBool retValue, nsresult rv);
++    sync SecurityGetIntPref(nsCString prefName)  returns (PRInt32 retValue, nsresult rv);
++    sync SecurityGetCharPref(nsCString prefName) returns (nsCString retValue, nsresult rv);
++    sync PrefHasUserValue(nsCString prefName) returns (PRBool retValue, nsresult rv);
++    sync PrefIsLocked(nsCString prefName) returns (PRBool retValue, nsresult rv);
+ };
+ 
+ }
+ }
+diff --git a/modules/libpref/src/Makefile.in b/modules/libpref/src/Makefile.in
+--- a/modules/libpref/src/Makefile.in
++++ b/modules/libpref/src/Makefile.in
+@@ -48,18 +48,16 @@ EXPORT_LIBRARY = 1
+ IS_COMPONENT	= 1
+ MODULE_NAME	= nsPrefModule
+ ifeq ($(OS_ARCH)$(MOZ_ENABLE_LIBXUL),WINNT)
+ LIBRARY_NAME	= xppref32
+ endif
+ GRE_MODULE	= 1
+ LIBXUL_LIBRARY = 1
+ 
+-include $(topsrcdir)/config/config.mk
+-
+ CPPSRCS		= \
+ 			  nsPrefBranch.cpp	\
+ 			  nsPrefService.cpp	\
+ 			  nsPrefsFactory.cpp	\
+ 			  prefapi.cpp \
+ 			  prefread.cpp \
+ 			 $(NULL)
+ 
+@@ -72,16 +70,18 @@ ifdef WINCE
+ DEFINES += -DWINCE=1
+ endif
+ 
+ EXTRA_DSO_LDOPTS = \
+ 		$(LIBS_DIR) \
+ 		$(MOZ_COMPONENT_LIBS) \
+ 		$(NULL)
+ 
++include $(topsrcdir)/config/config.mk
++include $(topsrcdir)/ipc/chromium/chromium-config.mk
+ include $(topsrcdir)/config/rules.mk
+ 
+ GARBAGE		+= $(addprefix $(DIST)/bin/defaults/pref/, \
+ 			mailnews.js editor.js \
+ 			aix.js beos.js unix.js winpref.js os2prefs.js openvms.js photon.js)
+ 
+ GARBAGE		+= greprefs.js
+ 
+diff --git a/modules/libpref/src/nsPrefBranch.cpp b/modules/libpref/src/nsPrefBranch.cpp
+--- a/modules/libpref/src/nsPrefBranch.cpp
++++ b/modules/libpref/src/nsPrefBranch.cpp
+@@ -17,31 +17,34 @@
+  * The Initial Developer of the Original Code is
+  * Netscape Communications Corporation.
+  * Portions created by the Initial Developer are Copyright (C) 1998
+  * the Initial Developer. All Rights Reserved.
+  *
+  * Contributor(s):
+  *   Alec Flett <alecf@netscape.com>
+  *   Brian Nesse <bnesse@netscape.com>
++ *   Frederic Plourde <frederic.plourde@polymtl.ca>
+  *
+  * Alternatively, the contents of this file may be used under the terms of
+  * either the GNU General Public License Version 2 or later (the "GPL"), or
+  * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
+  * in which case the provisions of the GPL or the LGPL are applicable instead
+  * of those above. If you wish to allow use of your version of this file only
+  * under the terms of either the GPL or the LGPL, and not to allow others to
+  * use your version of this file under the terms of the MPL, indicate your
+  * decision by deleting the provisions above and replace them with the notice
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
++#include "mozilla/dom/ContentProcessChild.h"
++
+ #include "nsPrefBranch.h"
+ #include "nsILocalFile.h"
+ #include "nsIObserverService.h"
+ #include "nsXPCOM.h"
+ #include "nsISupportsPrimitives.h"
+ #include "nsIDirectoryService.h"
+ #include "nsString.h"
+ #include "nsReadableUtils.h"
+@@ -136,29 +139,64 @@ NS_IMETHODIMP nsPrefBranch::GetRoot(char
+   return NS_OK;
+ }
+ 
+ NS_IMETHODIMP nsPrefBranch::GetPrefType(const char *aPrefName, PRInt32 *_retval)
+ {
+   const char *pref;
+   nsresult   rv;
+ 
++#ifdef MOZ_IPC
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    mozilla::dom::ContentProcessChild * cpc = 
++        mozilla::dom::ContentProcessChild::GetSingleton();
++    NS_ASSERTION(cpc, "Content Protocol is NULL!");
++
++    pref = getPrefName(aPrefName);
++    nsCString prefName(pref, strlen(pref));
++    if (cpc->SendGetPrefType(prefName, _retval, &rv)) {
++      return rv;
++    } else {
++      return NS_ERROR_UNEXPECTED;
++    }
++  }
++#endif
++
+   rv = getValidatedPrefName(aPrefName, &pref);
+   if (NS_FAILED(rv))
+     return rv;
+ 
+   *_retval = PREF_GetPrefType(pref);
+   return NS_OK;
+ }
+ 
+ NS_IMETHODIMP nsPrefBranch::GetBoolPref(const char *aPrefName, PRBool *_retval)
+ {
+   const char *pref;
+   nsresult   rv;
+ 
++#ifdef MOZ_IPC
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    mozilla::dom::ContentProcessChild * cpc = 
++        mozilla::dom::ContentProcessChild::GetSingleton();
++    NS_ASSERTION(cpc, "Content Protocol is NULL!");
++
++    PRBool retval;
++    pref = getPrefName(aPrefName);
++    nsCString prefName(pref, strlen(pref));
++    if (cpc->SendGetBoolPref(prefName, &retval, &rv)) {
++      if (NS_SUCCEEDED(rv))
++        *_retval = retval;
++      return rv;
++    } else {
++      return NS_ERROR_UNEXPECTED;
++    }
++  }
++#endif
++
+   rv = getValidatedPrefName(aPrefName, &pref);
+   if (NS_SUCCEEDED(rv)) {
+     rv = PREF_GetBoolPref(pref, _retval, mIsDefault);
+   }
+   return rv;
+ }
+ 
+ NS_IMETHODIMP nsPrefBranch::SetBoolPref(const char *aPrefName, PRInt32 aValue)
+@@ -173,16 +211,38 @@ NS_IMETHODIMP nsPrefBranch::SetBoolPref(
+   return rv;
+ }
+ 
+ NS_IMETHODIMP nsPrefBranch::GetCharPref(const char *aPrefName, char **_retval)
+ {
+   const char *pref;
+   nsresult   rv;
+ 
++#ifdef MOZ_IPC
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    mozilla::dom::ContentProcessChild * cpc = 
++        mozilla::dom::ContentProcessChild::GetSingleton();
++    NS_ASSERTION(cpc, "Content Protocol is NULL!");
++
++    pref = getPrefName(aPrefName);
++    nsCString prefName(pref, strlen(pref));
++    nsCString prefValue;
++    if (cpc->SendGetCharPref(prefName, &prefValue, &rv)) {
++      if (NS_SUCCEEDED(rv)) {
++        char *retval;
++        retval = strdup(prefValue.get());
++        *_retval = retval;
++      }
++      return rv;
++    } else {
++      return NS_ERROR_UNEXPECTED;
++    }
++  }
++#endif
++
+   rv = getValidatedPrefName(aPrefName, &pref);
+   if (NS_SUCCEEDED(rv)) {
+     rv = PREF_CopyCharPref(pref, _retval, mIsDefault);
+   }
+   return rv;
+ }
+ 
+ NS_IMETHODIMP nsPrefBranch::SetCharPref(const char *aPrefName, const char *aValue)
+@@ -198,16 +258,35 @@ NS_IMETHODIMP nsPrefBranch::SetCharPref(
+   return rv;
+ }
+ 
+ NS_IMETHODIMP nsPrefBranch::GetIntPref(const char *aPrefName, PRInt32 *_retval)
+ {
+   const char *pref;
+   nsresult   rv;
+ 
++#ifdef MOZ_IPC
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    mozilla::dom::ContentProcessChild * cpc = 
++        mozilla::dom::ContentProcessChild::GetSingleton();
++    NS_ASSERTION(cpc, "Content Protocol is NULL!");
++
++    PRInt32 retval;
++    pref = getPrefName(aPrefName);
++    nsCString prefName(pref, strlen(pref));
++    if (cpc->SendGetIntPref(prefName, &retval, &rv)) {
++      if (NS_SUCCEEDED(rv))
++        *_retval = retval;
++      return rv;
++    } else {
++      return NS_ERROR_UNEXPECTED;
++    }
++  }
++#endif
++
+   rv = getValidatedPrefName(aPrefName, &pref);
+   if (NS_SUCCEEDED(rv)) {
+     rv = PREF_GetIntPref(pref, _retval, mIsDefault);
+   }
+   return rv;
+ }
+ 
+ NS_IMETHODIMP nsPrefBranch::SetIntPref(const char *aPrefName, PRInt32 aValue)
+@@ -238,17 +317,20 @@ NS_IMETHODIMP nsPrefBranch::GetComplexVa
+       rv = getValidatedPrefName(aPrefName, &pref);
+       if (NS_FAILED(rv))
+         return rv;
+ 
+       if (mIsDefault) {
+         bNeedDefault = PR_TRUE;
+       } else {
+         // if there is no user (or locked) value
+-        if (!PREF_HasUserPref(pref) && !PREF_PrefIsLocked(pref)) {
++        PRBool hasUserValue, isLocked;
++        PrefHasUserValue(pref, &hasUserValue);
++        PrefIsLocked(pref, &isLocked);
++        if (!hasUserValue && !isLocked) {
+           bNeedDefault = PR_TRUE;
+         }
+       }
+ 
+       // if we need to fetch the default value, do that instead, otherwise use the
+       // value we pulled in at the top of this function
+       if (bNeedDefault) {
+         nsXPIDLString utf16String;
+@@ -449,16 +531,35 @@ NS_IMETHODIMP nsPrefBranch::ClearUserPre
+ 
+ NS_IMETHODIMP nsPrefBranch::PrefHasUserValue(const char *aPrefName, PRBool *_retval)
+ {
+   const char *pref;
+   nsresult   rv;
+ 
+   NS_ENSURE_ARG_POINTER(_retval);
+ 
++#ifdef MOZ_IPC
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    mozilla::dom::ContentProcessChild * cpc = 
++        mozilla::dom::ContentProcessChild::GetSingleton();
++    NS_ASSERTION(cpc, "Content Protocol is NULL!");
++
++    PRBool retval;
++    pref = getPrefName(aPrefName);
++    nsCString prefName(pref, strlen(pref));
++    if (cpc->SendPrefHasUserValue(prefName, &retval, &rv)) {
++      if (NS_SUCCEEDED(rv))
++        *_retval = retval;
++      return rv;
++    } else {
++      return NS_ERROR_UNEXPECTED;
++    }
++  }
++#endif
++
+   rv = getValidatedPrefName(aPrefName, &pref);
+   if (NS_SUCCEEDED(rv)) {
+     *_retval = PREF_HasUserPref(pref);
+   }
+   return rv;
+ }
+ 
+ NS_IMETHODIMP nsPrefBranch::LockPref(const char *aPrefName)
+@@ -475,16 +576,35 @@ NS_IMETHODIMP nsPrefBranch::LockPref(con
+ 
+ NS_IMETHODIMP nsPrefBranch::PrefIsLocked(const char *aPrefName, PRBool *_retval)
+ {
+   const char *pref;
+   nsresult   rv;
+ 
+   NS_ENSURE_ARG_POINTER(_retval);
+ 
++#ifdef MOZ_IPC
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    mozilla::dom::ContentProcessChild * cpc = 
++        mozilla::dom::ContentProcessChild::GetSingleton();
++    NS_ASSERTION(cpc, "Content Protocol is NULL!");
++
++    PRBool retval;
++    pref = getPrefName(aPrefName);
++    nsCString prefName(pref, strlen(pref));
++    if (cpc->SendPrefIsLocked(prefName, &retval, &rv)) {
++      if (NS_SUCCEEDED(rv))
++        *_retval = retval;
++      return rv;
++    } else {
++      return NS_ERROR_UNEXPECTED;
++    }
++  }
++#endif
++
+   rv = getValidatedPrefName(aPrefName, &pref);
+   if (NS_SUCCEEDED(rv)) {
+     *_retval = PREF_PrefIsLocked(pref);
+   }
+   return rv;
+ }
+ 
+ NS_IMETHODIMP nsPrefBranch::UnlockPref(const char *aPrefName)
+@@ -581,16 +701,28 @@ NS_IMETHODIMP nsPrefBranch::GetChildList
+ NS_IMETHODIMP nsPrefBranch::AddObserver(const char *aDomain, nsIObserver *aObserver, PRBool aHoldWeak)
+ {
+   PrefCallbackData *pCallback;
+   const char *pref;
+ 
+   NS_ENSURE_ARG_POINTER(aDomain);
+   NS_ENSURE_ARG_POINTER(aObserver);
+ 
++#ifdef MOZ_IPC
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    nsresult rv;
++    mozilla::dom::ContentProcessChild * cpc = 
++      mozilla::dom::ContentProcessChild::GetSingleton();
++    NS_ASSERTION(cpc, "Content Protocol is NULL!");
++    nsCString domain(aDomain, strlen(aDomain));
++    rv = cpc->AddRemotePrefObserver(domain, mPrefRoot, aObserver, aHoldWeak);
++    return rv;
++  }
++#endif
++
+   if (!mObservers) {
+     mObservers = new nsAutoVoidArray();
+     if (nsnull == mObservers)
+       return NS_ERROR_OUT_OF_MEMORY;
+   }
+ 
+   pCallback = (PrefCallbackData *)NS_Alloc(sizeof(PrefCallbackData) + strlen(aDomain));
+   if (nsnull == pCallback)
+@@ -615,31 +747,44 @@ NS_IMETHODIMP nsPrefBranch::AddObserver(
+   }
+ 
+   strcpy(pCallback->pDomain, aDomain);
+   mObservers->AppendElement(pCallback);
+ 
+   // We must pass a fully qualified preference name to the callback
+   pref = getPrefName(aDomain); // aDomain == nsnull only possible failure, trapped above
+   PREF_RegisterCallback(pref, NotifyObserver, pCallback);
++
+   return NS_OK;
+ }
+ 
+ NS_IMETHODIMP nsPrefBranch::RemoveObserver(const char *aDomain, nsIObserver *aObserver)
+ {
+   const char *pref;
+   PrefCallbackData *pCallback;
+   PRInt32 count;
+   PRInt32 i;
+   nsresult rv;
+   nsCAutoString domain;
+ 
+   NS_ENSURE_ARG_POINTER(aDomain);
+   NS_ENSURE_ARG_POINTER(aObserver);
+ 
++#ifdef MOZ_IPC
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    nsresult rv;
++    mozilla::dom::ContentProcessChild * cpc = 
++      mozilla::dom::ContentProcessChild::GetSingleton();
++    NS_ASSERTION(cpc, "Content Protocol is NULL!");
++    nsCString domain(aDomain, strlen(aDomain));
++    rv = cpc->RemoveRemotePrefObserver(domain, mPrefRoot, aObserver);
++    return rv;
++  }
++#endif
++
+   if (!mObservers)
+     return NS_OK;
+     
+   // need to find the index of observer, so we can remove it from the domain list too
+   count = mObservers->Count();
+   if (count == 0)
+     return NS_OK;
+ 
+@@ -675,16 +820,23 @@ NS_IMETHODIMP nsPrefBranch::Observe(nsIS
+   if (!nsCRT::strcmp(aTopic, NS_XPCOM_SHUTDOWN_OBSERVER_ID)) {
+     freeObserverList();
+   }
+   return NS_OK;
+ }
+ 
+ static nsresult NotifyObserver(const char *newpref, void *data)
+ {
++#ifdef MOZ_IPC
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    // The chrome process is notifying content prefs observers through IPDL
++    return NS_OK;
++  }
++#endif
++
+   PrefCallbackData *pData = (PrefCallbackData *)data;
+ 
+   // remove any root this string may contain so as to not confuse the observer
+   // by passing them something other than what they passed us as a topic
+   PRUint32 len = pData->pBranch->GetRootLength();
+   nsCAutoString suffix(newpref + len);  
+ 
+   nsCOMPtr<nsIObserver> observer;
+@@ -833,36 +985,105 @@ pref_enumChild(PLDHashTable *table, PLDH
+  *
+  * Pref access without security check - these are here
+  * to support nsScriptSecurityManager.
+  * These functions are part of nsISecurityPref, not nsIPref.
+  * **PLEASE** do not call these functions from elsewhere
+  */
+ NS_IMETHODIMP nsPrefBranch::SecurityGetBoolPref(const char *pref, PRBool * return_val)
+ {
++  const char *prefName;
++  nsresult   rv;
++
++#ifdef MOZ_IPC
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    mozilla::dom::ContentProcessChild * cpc = 
++        mozilla::dom::ContentProcessChild::GetSingleton();
++    NS_ASSERTION(cpc, "Content Protocol is NULL!");
++
++    PRBool retval;
++    prefName = getPrefName(pref);
++    nsCString prefNameStr(prefName, strlen(prefName));
++    if (cpc->SendSecurityGetBoolPref(prefNameStr, &retval, &rv)) {
++      if (NS_SUCCEEDED(rv))
++        *return_val = retval;
++      return rv;
++    } else {
++      return NS_ERROR_UNEXPECTED;
++    }
++  }
++#endif
++
+   return PREF_GetBoolPref(getPrefName(pref), return_val, PR_FALSE);
+ }
+ 
+ NS_IMETHODIMP nsPrefBranch::SecuritySetBoolPref(const char *pref, PRBool value)
+ {
+   return PREF_SetBoolPref(getPrefName(pref), value);
+ }
+ 
+ NS_IMETHODIMP nsPrefBranch::SecurityGetCharPref(const char *pref, char ** return_buf)
+ {
++#ifdef MOZ_IPC
++  const char *prefName;
++  nsresult   rv;
++
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    mozilla::dom::ContentProcessChild * cpc = 
++      mozilla::dom::ContentProcessChild::GetSingleton();
++    NS_ASSERTION(cpc, "Content Protocol is NULL!");
++
++    prefName = getPrefName(pref);
++    nsCString prefNameStr(prefName, strlen(prefName));
++    nsCString prefValue;
++    if (cpc->SendSecurityGetCharPref(prefNameStr, &prefValue, &rv)) {
++      if (NS_SUCCEEDED(rv)) {
++        char *retval;
++        retval = strdup(prefValue.get());
++        *return_buf = retval;
++      }
++      return rv;
++    } else {
++      return NS_ERROR_UNEXPECTED;
++    }
++  }
++#endif
++
+   return PREF_CopyCharPref(getPrefName(pref), return_buf, PR_FALSE);
+ }
+ 
+ NS_IMETHODIMP nsPrefBranch::SecuritySetCharPref(const char *pref, const char* value)
+ {
+   return PREF_SetCharPref(getPrefName(pref), value);
+ }
+ 
+ NS_IMETHODIMP nsPrefBranch::SecurityGetIntPref(const char *pref, PRInt32 * return_val)
+ {
++#ifdef MOZ_IPC
++  const char *prefName;
++  nsresult   rv;
++
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    mozilla::dom::ContentProcessChild * cpc = 
++        mozilla::dom::ContentProcessChild::GetSingleton();
++    NS_ASSERTION(cpc, "Content Protocol is NULL!");
++
++    PRInt32 retval;
++    prefName = getPrefName(pref);
++    nsCString prefNameStr(prefName, strlen(prefName));
++    if (cpc->SendSecurityGetIntPref(prefNameStr, &retval, &rv)) {
++      if (NS_SUCCEEDED(rv))
++        *return_val = retval;
++      return rv;
++    } else {
++      return NS_ERROR_UNEXPECTED;
++    }
++  }
++#endif
++
+   return PREF_GetIntPref(getPrefName(pref), return_val, PR_FALSE);
+ }
+ 
+ NS_IMETHODIMP nsPrefBranch::SecuritySetIntPref(const char *pref, PRInt32 value)
+ {
+   return PREF_SetIntPref(getPrefName(pref), value);
+ }
+ 
+diff --git a/modules/libpref/src/nsPrefBranch.h b/modules/libpref/src/nsPrefBranch.h
+--- a/modules/libpref/src/nsPrefBranch.h
++++ b/modules/libpref/src/nsPrefBranch.h
+@@ -48,16 +48,20 @@
+ #include "nsISupportsPrimitives.h"
+ #include "nsIRelativeFilePref.h"
+ #include "nsILocalFile.h"
+ #include "nsString.h"
+ #include "nsVoidArray.h"
+ #include "nsTArray.h"
+ #include "nsWeakReference.h"
+ 
++#ifdef MOZ_IPC
++#include "nsXULAppAPI.h"
++#endif
++
+ class nsPrefBranch : public nsIPrefBranchInternal,
+                      public nsISecurityPref,
+                      public nsIObserver,
+                      public nsSupportsWeakReference
+ {
+ public:
+   NS_DECL_ISUPPORTS
+   NS_DECL_NSIPREFBRANCH
+diff --git a/modules/libpref/src/prefapi.h b/modules/libpref/src/prefapi.h
+--- a/modules/libpref/src/prefapi.h
++++ b/modules/libpref/src/prefapi.h
+@@ -39,17 +39,18 @@
+ // <pre>
+ */
+ #ifndef PREFAPI_H
+ #define PREFAPI_H
+ 
+ #include "nscore.h"
+ #include "pldhash.h"
+ 
+-NSPR_BEGIN_EXTERN_C
++//NSPR_BEGIN_EXTERN_C
++extern "C" {
+ 
+ typedef union
+ {
+     char*       stringVal;
+     PRInt32     intVal;
+     PRBool      boolVal;
+ } PrefValue;
+ 
+@@ -204,10 +205,11 @@ nsresult PREF_UnregisterCallback( const 
+  * Used by nsPrefService as the callback function of the 'pref' parser
+  */
+ void PREF_ReaderCallback( void *closure,
+                           const char *pref,
+                           PrefValue   value,
+                           PrefType    type,
+                           PRBool      isDefault);
+ 
+-NSPR_END_EXTERN_C
++}
++//NSPR_END_EXTERN_C
+ #endif

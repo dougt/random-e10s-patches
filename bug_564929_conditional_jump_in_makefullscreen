@@ -1,0 +1,21 @@
+diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
+--- a/widget/src/qt/nsWindow.cpp
++++ b/widget/src/qt/nsWindow.cpp
+@@ -177,16 +177,17 @@ nsWindow::nsWindow()
+ #if (QT_VERSION >= QT_VERSION_CHECK(4, 6, 0))
+     mMouseEventsDisabled = PR_FALSE;
+ #endif // qt version check
+     mWidget              = nsnull;
+     mIsVisible           = PR_FALSE;
+     mActivatePending     = PR_FALSE;
+     mWindowType          = eWindowType_child;
+     mSizeState           = nsSizeMode_Normal;
++    mLastSizeMode        = nsSizeMode_Normal;
+     mPluginType          = PluginType_NONE;
+     mQCursor             = Qt::ArrowCursor;
+     mNeedsResize         = PR_FALSE;
+     mNeedsMove           = PR_FALSE;
+     mListenForResizes    = PR_FALSE;
+     mNeedsShow           = PR_FALSE;
+     
+     if (!gGlobalsInitialized) {

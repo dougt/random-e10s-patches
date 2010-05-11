@@ -1,0 +1,44 @@
+# HG changeset patch
+# Parent 23ae6d6f8012134feccd157a3777655d03cc1039
+
+diff --git a/embedding/browser/webBrowser/nsDocShellTreeOwner.cpp b/embedding/browser/webBrowser/nsDocShellTreeOwner.cpp
+--- a/embedding/browser/webBrowser/nsDocShellTreeOwner.cpp
++++ b/embedding/browser/webBrowser/nsDocShellTreeOwner.cpp
+@@ -114,16 +114,18 @@
+ // GetEventReceiver
+ //
+ // A helper routine that navigates the tricky path from a |nsWebBrowser| to
+ // a |nsPIDOMEventTarget| via the window root and chrome event handler.
+ //
+ static nsresult
+ GetPIDOMEventTarget( nsWebBrowser* inBrowser, nsPIDOMEventTarget** aTarget)
+ {
++  NS_ENSURE_ARG_POINTER(inBrowser);
++  
+   nsCOMPtr<nsIDOMWindow> domWindow;
+   inBrowser->GetContentDOMWindow(getter_AddRefs(domWindow));
+   NS_ENSURE_TRUE(domWindow, NS_ERROR_FAILURE);
+ 
+   nsCOMPtr<nsPIDOMWindow> domWindowPrivate = do_QueryInterface(domWindow);
+   NS_ENSURE_TRUE(domWindowPrivate, NS_ERROR_FAILURE);
+   nsPIDOMWindow *rootWindow = domWindowPrivate->GetPrivateRoot();
+   NS_ENSURE_TRUE(rootWindow, NS_ERROR_FAILURE);
+@@ -907,16 +909,18 @@ nsDocShellTreeOwner::RemoveChromeListene
+   }
+   if ( mChromeContextMenuListener ) {
+     mChromeContextMenuListener->RemoveChromeListeners();
+     NS_RELEASE(mChromeContextMenuListener);
+   }
+ 
+   nsCOMPtr<nsPIDOMEventTarget> piTarget;
+   GetPIDOMEventTarget(mWebBrowser, getter_AddRefs(piTarget));
++  if (!piTarget)
++    return NS_OK;
+ 
+   nsCOMPtr<nsIDOMEventGroup> sysGroup;
+   piTarget->GetSystemEventGroup(getter_AddRefs(sysGroup));
+   nsIEventListenerManager* elmP = piTarget->GetListenerManager(PR_TRUE);
+   if (sysGroup && elmP)
+   {
+     nsresult rv =
+       elmP->RemoveEventListenerByType(this, NS_LITERAL_STRING("dragover"),

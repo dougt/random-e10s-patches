@@ -1,0 +1,1583 @@
+diff --git a/ipc/ipdl/Makefile.in b/ipc/ipdl/Makefile.in
+--- a/ipc/ipdl/Makefile.in
++++ b/ipc/ipdl/Makefile.in
+@@ -59,6 +59,7 @@
+   dom/ipc  \
+   netwerk/ipc  \
+   netwerk/protocol/http/src  \
++  netwerk/protocol/ftp/src  \
+   netwerk/cookie/src  \
+   ipc/ipdl/test/cxx  \
+   ipc/testshell  \
+diff --git a/netwerk/ipc/NeckoChild.cpp b/netwerk/ipc/NeckoChild.cpp
+--- a/netwerk/ipc/NeckoChild.cpp
++++ b/netwerk/ipc/NeckoChild.cpp
+@@ -42,6 +42,7 @@
+ #include "mozilla/net/NeckoChild.h"
+ #include "mozilla/dom/ContentProcessChild.h"
+ #include "mozilla/net/HttpChannelChild.h"
++#include "mozilla/net/FTPChannelChild.h"
+ #include "mozilla/net/CookieServiceChild.h"
+ 
+ namespace mozilla {
+@@ -104,6 +105,24 @@
+   return true;
+ }
+ 
++PFTPChannelChild* 
++NeckoChild::AllocPFTPChannel()
++{
++  // We don't allocate here: see FTPChannelChild::AsyncOpen()
++  NS_RUNTIMEABORT("AllocPFTPChannel should not be called");
++  return nsnull;
++}
++
++bool 
++NeckoChild::DeallocPFTPChannel(PFTPChannelChild* channel)
++{
++  NS_ABORT_IF_FALSE(IsNeckoChild(), "DeallocPFTPChannel called by non-child!");
++
++  FTPChannelChild *p = static_cast<FTPChannelChild*>(channel);
++  p->Release();
++  return true;
++}
++
+ PCookieServiceChild* 
+ NeckoChild::AllocPCookieService()
+ {
+diff --git a/netwerk/ipc/NeckoChild.h b/netwerk/ipc/NeckoChild.h
+--- a/netwerk/ipc/NeckoChild.h
++++ b/netwerk/ipc/NeckoChild.h
+@@ -61,6 +61,8 @@
+ protected:
+   virtual PHttpChannelChild* AllocPHttpChannel();
+   virtual bool DeallocPHttpChannel(PHttpChannelChild*);
++  virtual PFTPChannelChild* AllocPFTPChannel();
++  virtual bool DeallocPFTPChannel(PFTPChannelChild*);
+   virtual PCookieServiceChild* AllocPCookieService();
+   virtual bool DeallocPCookieService(PCookieServiceChild*);
+ };
+diff --git a/netwerk/ipc/NeckoCommon.h b/netwerk/ipc/NeckoCommon.h
+--- a/netwerk/ipc/NeckoCommon.h
++++ b/netwerk/ipc/NeckoCommon.h
+@@ -57,6 +57,24 @@
+     return NS_ERROR_NOT_IMPLEMENTED;                                           \
+   } while (0)
+ 
++#define DIE_WITH_ASYNC_OPEN_MSG()                                              \
++  do {                                                                         \
++    fprintf(stderr,                                                            \
++            "*&*&*&*&*&*&*&**&*&&*& FATAL ERROR: '%s' "                        \
++            "called after AsyncOpen: %s +%d",                                  \
++            __FUNCTION__, __FILE__, __LINE__);                                 \
++    NS_ABORT();                                                                \
++    return NS_ERROR_NOT_IMPLEMENTED;                                           \
++  } while (0)
++
++#define ENSURE_CALLED_BEFORE_ASYNC_OPEN()                                      \
++  if (mIsPending)                                                              \
++    DIE_WITH_ASYNC_OPEN_MSG();                                                 \
++  if (mWasOpened)                                                              \
++    DIE_WITH_ASYNC_OPEN_MSG();                                                 \
++  NS_ENSURE_TRUE(!mIsPending, NS_ERROR_IN_PROGRESS);                           \
++  NS_ENSURE_TRUE(!mWasOpened, NS_ERROR_ALREADY_OPENED);
++
+ 
+ namespace mozilla {
+ namespace net {
+diff --git a/netwerk/ipc/NeckoParent.cpp b/netwerk/ipc/NeckoParent.cpp
+--- a/netwerk/ipc/NeckoParent.cpp
++++ b/netwerk/ipc/NeckoParent.cpp
+@@ -41,6 +41,7 @@
+ #include "nsHttp.h"
+ #include "mozilla/net/NeckoParent.h"
+ #include "mozilla/net/HttpChannelParent.h"
++#include "mozilla/net/FTPChannelParent.h"
+ #include "mozilla/net/CookieServiceParent.h"
+ 
+ namespace mozilla {
+@@ -71,6 +72,22 @@
+   return true;
+ }
+ 
++PFTPChannelParent* 
++NeckoParent::AllocPFTPChannel()
++{
++  FTPChannelParent *p = new FTPChannelParent();
++  p->AddRef();
++  return p;
++}
++
++bool 
++NeckoParent::DeallocPFTPChannel(PFTPChannelParent* channel)
++{
++  FTPChannelParent *p = static_cast<FTPChannelParent *>(channel);
++  p->Release();
++  return true;
++}
++
+ PCookieServiceParent* 
+ NeckoParent::AllocPCookieService()
+ {
+diff --git a/netwerk/ipc/NeckoParent.h b/netwerk/ipc/NeckoParent.h
+--- a/netwerk/ipc/NeckoParent.h
++++ b/netwerk/ipc/NeckoParent.h
+@@ -58,6 +58,8 @@
+ protected:
+   virtual PHttpChannelParent* AllocPHttpChannel();
+   virtual bool DeallocPHttpChannel(PHttpChannelParent*);
++  virtual PFTPChannelParent* AllocPFTPChannel();
++  virtual bool DeallocPFTPChannel(PFTPChannelParent*);
+   virtual PCookieServiceParent* AllocPCookieService();
+   virtual bool DeallocPCookieService(PCookieServiceParent*);
+ };
+diff --git a/netwerk/ipc/PNecko.ipdl b/netwerk/ipc/PNecko.ipdl
+--- a/netwerk/ipc/PNecko.ipdl
++++ b/netwerk/ipc/PNecko.ipdl
+@@ -40,6 +40,7 @@
+ 
+ include protocol PContentProcess;
+ include protocol PHttpChannel;
++include protocol PFTPChannel;
+ include protocol PCookieService;
+ 
+ namespace mozilla {
+@@ -51,12 +52,14 @@
+ {
+   manager PContentProcess;
+   manages PHttpChannel;
++  manages PFTPChannel;
+   manages PCookieService;
+ 
+ parent:
+   __delete__();
+ 
+   PHttpChannel();
++  PFTPChannel();
+   PCookieService();
+ };
+ 
+diff --git a/netwerk/protocol/ftp/src/FTPBaseChannel.cpp b/netwerk/protocol/ftp/src/FTPBaseChannel.cpp
+new file mode 100644
+--- /dev/null
++++ b/netwerk/protocol/ftp/src/FTPBaseChannel.cpp
+@@ -0,0 +1,99 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set sw=2 ts=8 et tw=80 : */
++
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is mozilla.org code.
++ *
++ * The Initial Developer of the Original Code is
++ *  The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Alon Zakai <azakai@mozilla.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#include "mozilla/net/FTPBaseChannel.h"
++
++#include "nsMimeTypes.h"
++#include "nsNetUtil.h"
++#include "nsIRequest.h"
++#include "nsFtpProtocolHandler.h"
++
++namespace mozilla {
++namespace net {
++
++FTPBaseChannel::FTPBaseChannel(nsIURI *uri, nsIProxyInfo *pi)
++  : mProxyInfo(pi)
++  , mStartPos(0)
++  , mResumeRequested(PR_FALSE)
++  , mLastModifiedTime(0)
++  , mFTPListener(0)
++  , mStatus(NS_OK)
++  , mIsPending(PR_FALSE)
++  , mWasOpened(PR_FALSE)
++{
++  LOG(("Creating FTPBaseChannel @%x\n", this));
++
++  // grab a reference to the handler to ensure that it doesn't go away.
++  NS_ADDREF(gFtpHandler);
++
++  SetURI(uri);
++}
++
++FTPBaseChannel::~FTPBaseChannel()
++{
++  LOG(("Destroying FTPBaseChannel @%x\n", this));
++
++  gFtpHandler->Release();
++}
++
++nsresult
++FTPBaseChannel::Init()
++{
++  nsresult rv = nsHashPropertyBag::Init();
++  if (NS_FAILED(rv)) return rv;
++
++  return NS_OK;
++}
++
++//-----------------------------------------------------------------------------
++// FTPBaseChannel::nsISupports
++//-----------------------------------------------------------------------------
++
++NS_IMPL_ISUPPORTS4(FTPBaseChannel,
++                   nsIChannel,
++                   nsIInterfaceRequestor,
++                   nsITransportEventSink,
++                   nsIFTPChannel);
++
++//------------------------------------------------------------------------------
++
++}
++}
++
+diff --git a/netwerk/protocol/ftp/src/FTPBaseChannel.h b/netwerk/protocol/ftp/src/FTPBaseChannel.h
+new file mode 100644
+--- /dev/null
++++ b/netwerk/protocol/ftp/src/FTPBaseChannel.h
+@@ -0,0 +1,101 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set sw=2 ts=8 et tw=80 : */
++
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is mozilla.org code.
++ *
++ * The Initial Developer of the Original Code is
++ *  The Mozilla Foundation.
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Alon Zakai <azakai@mozilla.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#ifndef mozilla_net_FTPBaseChannel_h
++#define mozilla_net_FTPBaseChannel_h
++
++#include "nsFTP.h"
++#include "nsBaseChannel.h"
++
++#include "nsProxyInfo.h"
++#include "nsIFTPChannel.h"
++#include "nsIURI.h"
++#include "nsIStreamListener.h"
++#include "nsIRequest.h"
++
++namespace mozilla {
++namespace net {
++
++/*
++ * This class is a partial implementation of nsIFTPChannel.  It contains code
++ * shared by nsFTPChannel and FTPChannelChild. 
++ * - Note that this class differs from nsBaseChannel (in fact it inherits from
++ *   that class).
++ */
++class FTPBaseChannel : public nsIFTPChannel
++                     , public nsBaseChannel
++{
++public:
++  NS_DECL_ISUPPORTS_INHERITED
++
++  FTPBaseChannel(nsIURI *uri, nsIProxyInfo *pi);
++  virtual ~FTPBaseChannel();
++
++  nsresult Init();
++
++  NS_IMETHODIMP GetLastModifiedTime(PRTime* lastModifiedTime) {
++    *lastModifiedTime = mLastModifiedTime;
++    return NS_OK;
++  }
++
++  NS_IMETHODIMP SetLastModifiedTime(PRTime lastModifiedTime) {
++    mLastModifiedTime = lastModifiedTime;
++    return NS_OK;
++  }
++
++protected:
++  nsCOMPtr< ::nsIStreamListener >   mFTPListener;
++  nsCOMPtr<nsISupports>             mListenerContext;
++  nsresult                          mStatus;
++
++  PRUint8                           mIsPending                  : 1;
++  PRUint8                           mWasOpened                  : 1;
++
++  nsCOMPtr<nsIProxyInfo>            mProxyInfo; 
++  PRUint64                          mStartPos;
++  PRPackedBool                      mResumeRequested;
++  PRTime                            mLastModifiedTime;
++};
++
++
++} // namespace net
++} // namespace mozilla
++
++#endif // mozilla_net_FTPBaseChannel_h
+diff --git a/netwerk/protocol/ftp/src/FTPChannelChild.cpp b/netwerk/protocol/ftp/src/FTPChannelChild.cpp
+new file mode 100644
+--- /dev/null
++++ b/netwerk/protocol/ftp/src/FTPChannelChild.cpp
+@@ -0,0 +1,213 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set sw=2 ts=8 et tw=80 : */
++
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is mozilla.org code.
++ *
++ * The Initial Developer of the Original Code is
++ *  The Mozilla Foundation
++ * Portions created by the Initial Developer are Copyright (C) 2009
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Alon Zakai <azakai@mozilla.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#include "nsFTP.h"
++#include "mozilla/net/NeckoChild.h"
++#include "mozilla/net/FTPChannelChild.h"
++
++#include "nsStringStream.h"
++#include "nsMimeTypes.h"
++#include "nsNetUtil.h"
++
++namespace mozilla {
++namespace net {
++
++FTPChannelChild::~FTPChannelChild()
++{
++  LOG(("Destroying FTPChannelChild @%x\n", this));
++}
++
++//-----------------------------------------------------------------------------
++// FTPChannelChild::nsBaseChannel
++//-----------------------------------------------------------------------------
++
++nsresult FTPChannelChild::OpenContentStream(PRBool async, nsIInputStream **stream, nsIChannel **channel)
++{
++  NS_ABORT_IF_FALSE(false, "Should never enter FTPChannelChild::OpenContentStream");
++  return NS_OK;
++}
++
++//-----------------------------------------------------------------------------
++// FTPChannelChild::nsISupports
++//-----------------------------------------------------------------------------
++
++NS_IMPL_ADDREF_INHERITED(FTPChannelChild, FTPBaseChannel)
++NS_IMPL_RELEASE_INHERITED(FTPChannelChild, FTPBaseChannel)
++
++NS_INTERFACE_MAP_BEGIN(FTPChannelChild)
++  NS_INTERFACE_MAP_ENTRY(nsIRequest)
++  NS_INTERFACE_MAP_ENTRY(nsIChannel)
++  NS_INTERFACE_MAP_ENTRY(nsIFTPChannel)
++NS_INTERFACE_MAP_END_INHERITING(FTPBaseChannel)
++
++//-----------------------------------------------------------------------------
++
++NS_IMETHODIMP
++FTPChannelChild::AsyncOpen(::nsIStreamListener *listener, nsISupports *aContext)
++{
++  LOG(("FTPChannelChild::AsyncOpen [this=%x]\n", this));
++
++  NS_ENSURE_TRUE(gNeckoChild != nsnull, NS_ERROR_FAILURE);
++  NS_ENSURE_ARG_POINTER(listener);
++  NS_ENSURE_TRUE(!mIsPending, NS_ERROR_IN_PROGRESS);
++  NS_ENSURE_TRUE(!mWasOpened, NS_ERROR_ALREADY_OPENED);
++
++  // Port checked in parent, but duplicate here so we can return with error
++  // immediately, as we've done since before e10s.
++  nsresult rv;
++  rv = NS_CheckPortSafety(nsBaseChannel::URI()); // Need to disambiguate,
++                                                 // because in the child ipdl,
++                                                 // a typedef URI is defined...
++  if (NS_FAILED(rv))
++    return rv;
++
++  // This corresponds to Release() in DeallocPFTPChannel 
++  this->AddRef();
++
++  // TODO: Combine constructor and AsyncOpen to save one IPC msg
++  gNeckoChild->SendPFTPChannelConstructor(this);
++  //SetStreamListener(listener);
++  mFTPListener = listener;
++  mListenerContext = aContext;
++
++  // TODO: serialize mConnectionInfo across to the parent, and set it on
++  // the new channel somehow?
++
++  // TODO: serialize mCaps across to the parent, and set it on
++  // the new channel somehow?
++
++  // TODO: need to notify (child-side) http-on-modify-req observers 
++
++  // TODO: add self to loadgroup? 
++
++  SendAsyncOpen(IPC::URI(nsBaseChannel::URI()));
++
++  mIsPending = PR_TRUE;
++  mWasOpened = PR_TRUE;
++  mState = FCC_OPENED;
++
++  return NS_OK;
++}
++
++//-----------------------------------------------------------------------------
++// FTPChannelChild::PFTPChannelChild
++//-----------------------------------------------------------------------------
++
++NS_IMETHODIMP
++FTPChannelChild::IsPending(PRBool *result)
++{
++  *result = mIsPending; // Differently than nsBaseChannel.
++  return NS_OK;
++}
++
++bool 
++FTPChannelChild::RecvOnStartRequest(const PRInt32& aContentLength)
++{
++  LOG(("FTPChannelChild::RecvOnStartRequest [this=%x]\n", this));
++
++  SetContentLength(aContentLength);
++  nsresult rv = mFTPListener->OnStartRequest(this, mListenerContext);
++  if (!NS_SUCCEEDED(rv)) {
++    // TODO: Cancel request:
++    //  - Send Cancel msg to parent 
++    //  - drop any in flight OnDataAvail msgs we receive
++    //  - make sure we do call OnStopRequest eventually
++    //  - return true here, not false
++    return false;  
++  }
++  return true;
++}
++
++bool 
++FTPChannelChild::RecvOnDataAvailable(const nsCString& data,
++                                     const PRUint32& offset,
++                                     const PRUint32& count)
++{
++  LOG(("FTPChannelChild::RecvOnDataAvailable [this=%x]\n", this));
++
++  mState = FCC_ONDATA;
++
++  // NOTE: the OnDataAvailable contract requires the client to read all the data
++  // in the inputstream.  This code relies on that ('data' will go away after
++  // this function).  Apparently the previous, non-e10s behavior was to actually
++  // support only reading part of the data, allowing later calls to read the
++  // rest.
++  nsCOMPtr<nsIInputStream> stringStream;
++  nsresult rv = NS_NewByteInputStream(getter_AddRefs(stringStream),
++                                      data.get(),
++                                      count,
++                                      NS_ASSIGNMENT_DEPEND);
++  if (!NS_SUCCEEDED(rv)) {
++    // TODO:  what to do here?  Cancel request?  Very unlikely to fail.
++    return false;  
++  }
++  rv = mFTPListener->OnDataAvailable(this, mListenerContext,
++                                         stringStream, offset, count);
++  stringStream->Close();
++  if (!NS_SUCCEEDED(rv)) {
++    // TODO: Cancel request: see notes in OnStartRequest
++    return false; 
++  }
++  return true;
++}
++
++bool 
++FTPChannelChild::RecvOnStopRequest(const nsresult& statusCode)
++{
++  LOG(("FTPChannelChild::RecvOnStopRequest [this=%x status=%u]\n", 
++           this, statusCode));
++
++  mState = FCC_ONSTOP;
++
++  mIsPending = PR_FALSE;
++  mStatus = statusCode;
++  nsresult rv = mFTPListener->OnStopRequest(this, mListenerContext, statusCode);
++  mFTPListener = 0;
++  mListenerContext = 0;
++  if (!NS_SUCCEEDED(rv)) {
++    // TODO: Cancel request: see notes in OnStartRequest
++    return false;  
++  }
++  return true;
++}
++
++//------------------------------------------------------------------------------
++}} // mozilla::net
++
+diff --git a/netwerk/protocol/ftp/src/FTPChannelChild.h b/netwerk/protocol/ftp/src/FTPChannelChild.h
+new file mode 100644
+--- /dev/null
++++ b/netwerk/protocol/ftp/src/FTPChannelChild.h
+@@ -0,0 +1,93 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set sw=2 ts=8 et tw=80 : */
++
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is mozilla.org code.
++ *
++ * The Initial Developer of the Original Code is
++ *  The Mozilla Foundation
++ * Portions created by the Initial Developer are Copyright (C) 2009
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Alon Zakai <azakai@mozilla.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#ifndef mozilla_net_FTPChannelChild_h
++#define mozilla_net_FTPChannelChild_h
++
++#include "mozilla/net/FTPBaseChannel.h"
++#include "mozilla/net/PFTPChannelChild.h"
++
++#include "nsIStreamListener.h"
++
++namespace mozilla {
++namespace net {
++
++// TODO: replace with IPDL states
++enum FTPChannelChildState {
++  FCC_NEW,
++  FCC_OPENED,
++  FCC_ONSTART,
++  FCC_ONDATA,
++  FCC_ONSTOP
++};
++
++// Header file contents
++class FTPChannelChild : public PFTPChannelChild
++                      , public FTPBaseChannel
++{
++public:
++  NS_DECL_ISUPPORTS_INHERITED
++
++  FTPChannelChild(nsIURI *uri, nsIProxyInfo *pi) : FTPBaseChannel(uri, pi)
++  { }
++  virtual ~FTPChannelChild();
++
++  //! Sends a remote call using e10s to a parent process
++  virtual nsresult OpenContentStream(PRBool async, nsIInputStream **stream, nsIChannel **channel);
++  NS_IMETHOD AsyncOpen(::nsIStreamListener *listener, nsISupports *aContext);
++
++  NS_IMETHOD IsPending(PRBool *result);
++
++protected:
++  bool RecvOnStartRequest(const PRInt32& aContentLength);
++  bool RecvOnDataAvailable(const nsCString& data, 
++                           const PRUint32& offset,
++                           const PRUint32& count);
++  bool RecvOnStopRequest(const nsresult& statusCode);
++
++private:
++  // FIXME: replace with IPDL states (bug 536319) 
++  enum FTPChannelChildState mState;
++};
++
++} // namespace net
++} // namespace mozilla
++
++#endif // mozilla_net_FTPChannelChild_h
+diff --git a/netwerk/protocol/ftp/src/FTPChannelParent.cpp b/netwerk/protocol/ftp/src/FTPChannelParent.cpp
+new file mode 100644
+--- /dev/null
++++ b/netwerk/protocol/ftp/src/FTPChannelParent.cpp
+@@ -0,0 +1,194 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set sw=2 ts=8 et tw=80 : */
++
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is mozilla.org code.
++ *
++ * The Initial Developer of the Original Code is
++ *  The Mozilla Foundation
++ * Portions created by the Initial Developer are Copyright (C) 2009
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Alon Zakai <azakai@mozilla.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#include "nsFTP.h"
++
++#include "mozilla/net/FTPChannelParent.h"
++#include "nsFTPChannel.h"
++#include "nsNetUtil.h"
++#include "nsISupportsPriority.h"
++#include "nsFtpProtocolHandler.h"
++
++namespace mozilla {
++namespace net {
++
++// C++ file contents
++FTPChannelParent::FTPChannelParent()
++{
++  nsIProtocolHandler* handler;
++  CallGetService(NS_NETWORK_PROTOCOL_CONTRACTID_PREFIX "ftp", &handler);
++  NS_ASSERTION(handler, "no ftp handler");
++}
++
++FTPChannelParent::~FTPChannelParent()
++{
++  gFtpHandler->Release();
++}
++
++//-----------------------------------------------------------------------------
++// FTPChannelParent::nsISupports
++//-----------------------------------------------------------------------------
++
++NS_IMPL_ISUPPORTS3(FTPChannelParent, 
++                   nsIStreamListener,
++                   nsIInterfaceRequestor,
++                   nsIRequestObserver);
++
++//-----------------------------------------------------------------------------
++// FTPChannelParent::PFTPChannelParent
++//-----------------------------------------------------------------------------
++
++bool 
++FTPChannelParent::RecvAsyncOpen(const IPC::URI& aURI)
++{
++  nsCOMPtr<nsIURI> uri = aURI;
++
++  nsCString uriSpec;
++  uri->GetSpec(uriSpec);
++  LOG(("FTPChannelParent RecvAsyncOpen [this=%x uri=%s]\n", 
++       this, uriSpec.get()));
++
++  nsresult rv;
++
++  nsCOMPtr<nsIIOService> ios(do_GetIOService(&rv));
++  if (NS_FAILED(rv))
++    return false;       // TODO: send fail msg to child, return true
++
++  nsCOMPtr<nsIChannel> chan;
++  rv = NS_NewChannel(getter_AddRefs(chan), uri, ios);
++  if (NS_FAILED(rv))
++    return false;       // TODO: send fail msg to child, return true
++
++  nsFtpChannel *ftpChan = static_cast<nsFtpChannel *>(chan.get());
++
++  rv = ftpChan->AsyncOpen(this, nsnull);
++  if (NS_FAILED(rv))
++    return false;       // TODO: send fail msg to child, return true
++
++  return true;
++}
++
++//-----------------------------------------------------------------------------
++// FTPChannelParent::nsIRequestObserver
++//-----------------------------------------------------------------------------
++
++NS_IMETHODIMP
++FTPChannelParent::OnStartRequest(nsIRequest *aRequest, nsISupports *aContext)
++{
++  LOG(("FTPChannelParent::OnStartRequest [this=%x]\n", this));
++
++  nsFtpChannel *chan = static_cast<nsFtpChannel *>(aRequest);
++  PRInt32 aContentLength;
++  chan->GetContentLength(&aContentLength);
++
++  if (!SendOnStartRequest(aContentLength)) {
++    // IPDL error--child dead/dying & our own destructor will be called
++    // automatically
++    // -- TODO: verify that that's the case :)
++    return NS_ERROR_UNEXPECTED; 
++  }
++
++  return NS_OK;
++}
++	
++NS_IMETHODIMP
++FTPChannelParent::OnStopRequest(nsIRequest *aRequest, 
++                                nsISupports *aContext, 
++                                nsresult aStatusCode)
++{
++  LOG(("FTPChannelParent::OnStopRequest: [this=%x status=%ul]\n", 
++       this, aStatusCode));
++
++  if (!SendOnStopRequest(aStatusCode)) {
++    // IPDL error--child dead/dying & our own destructor will be called
++    // automatically
++    return NS_ERROR_UNEXPECTED; 
++  }
++
++  return NS_OK;
++}
++
++//-----------------------------------------------------------------------------
++// FTPChannelParent::nsIStreamListener
++//-----------------------------------------------------------------------------
++
++NS_IMETHODIMP
++FTPChannelParent::OnDataAvailable(nsIRequest *aRequest, 
++                                  nsISupports *aContext, 
++                                  nsIInputStream *aInputStream, 
++                                  PRUint32 aOffset, 
++                                  PRUint32 aCount)
++{
++  LOG(("FTPChannelParent::OnDataAvailable [this=%x]\n", this));
++ 
++  nsresult rv;
++
++  nsCString data;
++  data.SetLength(aCount);
++  char * p = data.BeginWriting();
++  PRUint32 bytesRead;
++  rv = aInputStream->Read(p, aCount, &bytesRead);
++  data.EndWriting();
++  if (!NS_SUCCEEDED(rv) || bytesRead != aCount) {
++    return rv;              // TODO: figure out error handling
++  }
++
++  if (!SendOnDataAvailable(data, aOffset, bytesRead)) {
++    // IPDL error--child dead/dying & our own destructor will be called
++    // automatically
++    return NS_ERROR_UNEXPECTED; 
++  }
++
++  return NS_OK;
++}
++
++//-----------------------------------------------------------------------------
++// FTPChannelParent::nsIInterfaceRequestor
++//-----------------------------------------------------------------------------
++
++NS_IMETHODIMP 
++FTPChannelParent::GetInterface(const nsIID& uuid, void **result)
++{
++  DROP_DEAD();
++}
++
++
++}} // mozilla::net
++
+diff --git a/netwerk/protocol/ftp/src/FTPChannelParent.h b/netwerk/protocol/ftp/src/FTPChannelParent.h
+new file mode 100644
+--- /dev/null
++++ b/netwerk/protocol/ftp/src/FTPChannelParent.h
+@@ -0,0 +1,73 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set sw=2 ts=8 et tw=80 : */
++
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is mozilla.org code.
++ *
++ * The Initial Developer of the Original Code is
++ *  The Mozilla Foundation
++ * Portions created by the Initial Developer are Copyright (C) 2009
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Alon Zakai <azakai@mozilla.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#ifndef mozilla_net_FTPChannelParent_h
++#define mozilla_net_FTPChannelParent_h
++
++#include "mozilla/net/PFTPChannelParent.h"
++#include "mozilla/net/NeckoCommon.h"
++#include "nsIStreamListener.h"
++#include "nsIInterfaceRequestor.h"
++
++namespace mozilla {
++namespace net {
++
++// Header file contents
++class FTPChannelParent : public PFTPChannelParent
++                       , public nsIStreamListener
++                       , public nsIInterfaceRequestor
++{
++public:
++  NS_DECL_ISUPPORTS
++  NS_DECL_NSIREQUESTOBSERVER
++  NS_DECL_NSISTREAMLISTENER
++  NS_DECL_NSIINTERFACEREQUESTOR
++
++  FTPChannelParent();
++  virtual ~FTPChannelParent();
++
++protected:
++  virtual bool RecvAsyncOpen(const IPC::URI& uri);
++};
++
++} // namespace net
++} // namespace mozilla
++
++#endif // mozilla_net_FTPChannelParent_h
+diff --git a/netwerk/protocol/ftp/src/Makefile.in b/netwerk/protocol/ftp/src/Makefile.in
+--- a/netwerk/protocol/ftp/src/Makefile.in
++++ b/netwerk/protocol/ftp/src/Makefile.in
+@@ -46,14 +46,39 @@
+ LIBRARY_NAME	= nkftp_s
+ LIBXUL_LIBRARY  = 1
+ 
++EXPORTS_NAMESPACES = mozilla/net
++
++EXPORTS_mozilla/net = \
++		FTPBaseChannel.h \
++		$(NULL)
++
++ifdef MOZ_IPC
++EXPORTS_mozilla/net += \
++		FTPChannelParent.h \
++		FTPChannelChild.h  \
++  $(NULL)
++
++EXPORTS = \
++		nsFTP.h \
++		$(NULL)
++endif
+ 
+ CPPSRCS		= \
+ 		nsFtpProtocolHandler.cpp \
++		FTPBaseChannel.cpp \
+ 		nsFTPChannel.cpp \
+ 		nsFtpConnectionThread.cpp \
+ 		nsFtpControlConnection.cpp \
++		nsFTP.cpp \
+ 		$(NULL)
+ 
++ifdef MOZ_IPC
++CPPSRCS += \
++		FTPChannelParent.cpp \
++		FTPChannelChild.cpp \
++		$(NULL)
++endif
++
+ # Use -g for Irix mipspro builds as workaround for bug 92099
+ ifneq (,$(filter IRIX IRIX64,$(OS_ARCH)))
+ ifndef GNU_CC
+@@ -71,6 +96,8 @@
+ # static lib.
+ FORCE_STATIC_LIB = 1
+ 
++include $(topsrcdir)/config/config.mk
++include $(topsrcdir)/ipc/chromium/chromium-config.mk
+ include $(topsrcdir)/config/rules.mk
+ 
+ ifeq ($(OS_ARCH),WINNT)
+diff --git a/netwerk/protocol/ftp/src/PFTPChannel.ipdl b/netwerk/protocol/ftp/src/PFTPChannel.ipdl
+new file mode 100644
+--- /dev/null
++++ b/netwerk/protocol/ftp/src/PFTPChannel.ipdl
+@@ -0,0 +1,74 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* vim: set sw=2 ts=8 et tw=80 ft=cpp : */
++
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is mozilla.org code.
++ *
++ * The Initial Developer of the Original Code is
++ *  The Mozilla Foundation
++ * Portions created by the Initial Developer are Copyright (C) 2009
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Alon Zakai <azakai@mozilla.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++include protocol PNecko;
++
++include "mozilla/net/NeckoMessageUtils.h";
++
++using RequestHeaderTuples;
++using IPC::URI;
++
++namespace mozilla {
++namespace net {
++
++//-------------------------------------------------------------------
++protocol PFTPChannel
++{
++  manager PNecko;
++
++parent:
++  __delete__();
++
++  AsyncOpen(URI uri);
++
++child:
++  OnStartRequest(PRInt32 aContentLength);
++
++  OnDataAvailable(nsCString data, 
++                  PRUint32  offset, 
++                  PRUint32  count);
++
++  OnStopRequest(nsresult statusCode);
++};
++
++
++} // namespace net
++} // namespace mozilla
++
+diff --git a/netwerk/protocol/ftp/src/ipdl.mk b/netwerk/protocol/ftp/src/ipdl.mk
+new file mode 100644
+--- /dev/null
++++ b/netwerk/protocol/ftp/src/ipdl.mk
+@@ -0,0 +1,40 @@
++# ***** BEGIN LICENSE BLOCK *****
++# Version: MPL 1.1/GPL 2.0/LGPL 2.1
++#
++# The contents of this file are subject to the Mozilla Public License Version
++# 1.1 (the "License"); you may not use this file except in compliance with
++# the License. You may obtain a copy of the License at
++# http://www.mozilla.org/MPL/
++#
++# Software distributed under the License is distributed on an "AS IS" basis,
++# WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++# for the specific language governing rights and limitations under the
++# License.
++#
++# The Original Code is Mozilla Firefox.
++#
++# The Initial Developer of the Original Code is
++# The Mozilla Foundation <http://www.mozilla.org/>.
++# Portions created by the Initial Developer are Copyright (C) 2010
++# the Initial Developer. All Rights Reserved.
++#
++# Contributor(s):  Alon Zakai
++#
++# Alternatively, the contents of this file may be used under the terms of
++# either the GNU General Public License Version 2 or later (the "GPL"), or
++# the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++# in which case the provisions of the GPL or the LGPL are applicable instead
++# of those above. If you wish to allow use of your version of this file only
++# under the terms of either the GPL or the LGPL, and not to allow others to
++# use your version of this file under the terms of the MPL, indicate your
++# decision by deleting the provisions above and replace them with the notice
++# and other provisions required by the GPL or the LGPL. If you do not delete
++# the provisions above, a recipient may use your version of this file under
++# the terms of any one of the MPL, the GPL or the LGPL.
++#
++# ***** END LICENSE BLOCK *****
++
++IPDLSRCS =          \
++  PFTPChannel.ipdl \
++  $(NULL)
++
+diff --git a/netwerk/protocol/ftp/src/nsFTP.cpp b/netwerk/protocol/ftp/src/nsFTP.cpp
+new file mode 100644
+--- /dev/null
++++ b/netwerk/protocol/ftp/src/nsFTP.cpp
+@@ -0,0 +1,43 @@
++/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
++/* vim:set ts=4 sw=4 sts=4 et cin: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Mozilla.
++ *
++ * The Initial Developer of the Original Code is
++ * Netscape Communications.
++ * Portions created by the Initial Developer are Copyright (C) 2001
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Alon Zakai <azakai@mozilla.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#include "nsFTP.h"
++
++PRLogModuleInfo *gFTPLog = nsnull;
++
+diff --git a/netwerk/protocol/ftp/src/nsFTP.h b/netwerk/protocol/ftp/src/nsFTP.h
+new file mode 100644
+--- /dev/null
++++ b/netwerk/protocol/ftp/src/nsFTP.h
+@@ -0,0 +1,93 @@
++/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
++/* vim:set ts=4 sw=4 sts=4 et cin: */
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is Mozilla.
++ *
++ * The Initial Developer of the Original Code is
++ * Netscape Communications.
++ * Portions created by the Initial Developer are Copyright (C) 2001
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *   Alon Zakai <azakai@mozilla.com>
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#ifndef nsFTP_h__
++#define nsFTP_h__
++
++#if defined(MOZ_LOGGING)
++#define FORCE_PR_LOG
++#endif
++
++#ifdef MOZ_IPC
++// e10s mess: See bug 545995
++#if defined(PR_LOG) && !defined(ALLOW_LATE_NSHTTP_H_INCLUDE)
++#error "If nsFTP.h #included it must come before any IPDL-generated files or other files that #include prlog.h"
++#endif
++#include "mozilla/net/NeckoChild.h"
++#undef LOG
++#endif // MOZ_IPC
++
++#include "plstr.h"
++#include "prlog.h"
++#include "prtime.h"
++#include "nsISupportsUtils.h"
++#include "nsIRequest.h"
++#include "nsPromiseFlatString.h"
++#include "nsURLHelper.h"
++#include "netCore.h"
++
++#if defined(PR_LOGGING)
++//
++// Log module for FTP Protocol logging...
++//
++// To enable logging (see prlog.h for full details):
++//
++//    set NSPR_LOG_MODULES=nsFTP:5
++//    set NSPR_LOG_FILE=ftp.log
++//
++// this enables PR_LOG_ALWAYS level information and places all output in
++// the file ftp.log
++//
++extern PRLogModuleInfo *gFTPLog;
++#endif
++
++// ftp logging
++#define LOG1(args) PR_LOG(gFTPLog, 1, args)
++#define LOG2(args) PR_LOG(gFTPLog, 2, args)
++#define LOG3(args) PR_LOG(gFTPLog, 3, args)
++#define LOG4(args) PR_LOG(gFTPLog, 4, args)
++#define LOG(args) LOG4(args)
++
++#define LOG1_ENABLED() PR_LOG_TEST(gFTPLog, 1)
++#define LOG2_ENABLED() PR_LOG_TEST(gFTPLog, 2)
++#define LOG3_ENABLED() PR_LOG_TEST(gFTPLog, 3)
++#define LOG4_ENABLED() PR_LOG_TEST(gFTPLog, 4)
++#define LOG_ENABLED() LOG4_ENABLED()
++
++#endif // nsFTP_h__
+diff --git a/netwerk/protocol/ftp/src/nsFTPChannel.h b/netwerk/protocol/ftp/src/nsFTPChannel.h
+--- a/netwerk/protocol/ftp/src/nsFTPChannel.h
++++ b/netwerk/protocol/ftp/src/nsFTPChannel.h
+@@ -41,6 +41,8 @@
+ #ifndef nsFTPChannel_h___
+ #define nsFTPChannel_h___
+ 
++#include "FTPBaseChannel.h"
++
+ #include "nsBaseChannel.h"
+ 
+ #include "nsIIOService.h"
+@@ -63,27 +65,21 @@
+ #include "nsIResumableChannel.h"
+ #include "nsHashPropertyBag.h"
+ 
+-class nsFtpChannel : public nsBaseChannel,
+-                     public nsIFTPChannel,
+-                     public nsIUploadChannel,
+-                     public nsIResumableChannel,
+-                     public nsIProxiedChannel
++class nsFtpChannel : public mozilla::net::FTPBaseChannel
++                   , public nsIUploadChannel
++                   , public nsIResumableChannel
++                   , public nsIProxiedChannel
+ {
+ public:
+     NS_DECL_ISUPPORTS_INHERITED
+     NS_DECL_NSIUPLOADCHANNEL
+     NS_DECL_NSIRESUMABLECHANNEL
+     NS_DECL_NSIPROXIEDCHANNEL
++
++    nsFtpChannel(nsIURI *uri, nsIProxyInfo *pi) : FTPBaseChannel(uri, pi)
++    { }
++    virtual ~nsFtpChannel() {}
+     
+-    nsFtpChannel(nsIURI *uri, nsIProxyInfo *pi)
+-        : mProxyInfo(pi)
+-        , mStartPos(0)
+-        , mResumeRequested(PR_FALSE)
+-        , mLastModifiedTime(0)
+-    {
+-        SetURI(uri);
+-    }
+-
+     nsIProxyInfo *ProxyInfo() {
+         return mProxyInfo;
+     }
+@@ -102,16 +98,6 @@
+         mEntityID = entityID;
+     }
+ 
+-    NS_IMETHODIMP GetLastModifiedTime(PRTime* lastModifiedTime) {
+-        *lastModifiedTime = mLastModifiedTime;
+-        return NS_OK;
+-    }
+-
+-    NS_IMETHODIMP SetLastModifiedTime(PRTime lastModifiedTime) {
+-        mLastModifiedTime = lastModifiedTime;
+-        return NS_OK;
+-    }
+-
+     // Data stream to upload
+     nsIInputStream *UploadStream() {
+         return mUploadStream;
+@@ -121,20 +107,15 @@
+     void GetFTPEventSink(nsCOMPtr<nsIFTPEventSink> &aResult);
+ 
+ protected:
+-    virtual ~nsFtpChannel() {}
+     virtual nsresult OpenContentStream(PRBool async, nsIInputStream **result,
+                                        nsIChannel** channel);
+     virtual PRBool GetStatusArg(nsresult status, nsString &statusArg);
+     virtual void OnCallbacksChanged();
+ 
+ private:
+-    nsCOMPtr<nsIProxyInfo>    mProxyInfo; 
+     nsCOMPtr<nsIFTPEventSink> mFTPEventSink;
+     nsCOMPtr<nsIInputStream>  mUploadStream;
+-    PRUint64                  mStartPos;
+     nsCString                 mEntityID;
+-    PRPackedBool              mResumeRequested;
+-    PRTime                    mLastModifiedTime;
+ };
+ 
+ #endif /* nsFTPChannel_h___ */
+diff --git a/netwerk/protocol/ftp/src/nsFtpConnectionThread.cpp b/netwerk/protocol/ftp/src/nsFtpConnectionThread.cpp
+--- a/netwerk/protocol/ftp/src/nsFtpConnectionThread.cpp
++++ b/netwerk/protocol/ftp/src/nsFtpConnectionThread.cpp
+@@ -38,6 +38,8 @@
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
++#include "nsFTPChannel.h"
++
+ #include <limits.h>
+ #include <ctype.h>
+ 
+@@ -46,7 +48,6 @@
+ #include "prtime.h"
+ 
+ #include "nsIOService.h"
+-#include "nsFTPChannel.h"
+ #include "nsFtpConnectionThread.h"
+ #include "nsFtpControlConnection.h"
+ #include "nsFtpProtocolHandler.h"
+diff --git a/netwerk/protocol/ftp/src/nsFtpControlConnection.cpp b/netwerk/protocol/ftp/src/nsFtpControlConnection.cpp
+--- a/netwerk/protocol/ftp/src/nsFtpControlConnection.cpp
++++ b/netwerk/protocol/ftp/src/nsFtpControlConnection.cpp
+@@ -35,8 +35,8 @@
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
++#include "nsFTPChannel.h"
+ #include "nsIOService.h"
+-#include "nsFTPChannel.h"
+ #include "nsFtpControlConnection.h"
+ #include "nsFtpProtocolHandler.h"
+ #include "prlog.h"
+diff --git a/netwerk/protocol/ftp/src/nsFtpProtocolHandler.cpp b/netwerk/protocol/ftp/src/nsFtpProtocolHandler.cpp
+--- a/netwerk/protocol/ftp/src/nsFtpProtocolHandler.cpp
++++ b/netwerk/protocol/ftp/src/nsFtpProtocolHandler.cpp
+@@ -49,8 +49,8 @@
+  *                               use in OS2
+  */
+ 
+-#include "nsFtpProtocolHandler.h"
+-#include "nsFTPChannel.h"
++#include "nsFTP.h"
++
+ #include "nsIURL.h"
+ #include "nsIStandardURL.h"
+ #include "nsCRT.h"
+@@ -65,23 +65,17 @@
+ #include "nsIObserverService.h"
+ #include "nsEscape.h"
+ 
+-//-----------------------------------------------------------------------------
++#include "nsFtpProtocolHandler.h"
++#include "nsFTPChannel.h"
+ 
+-#if defined(PR_LOGGING)
+-//
+-// Log module for FTP Protocol logging...
+-//
+-// To enable logging (see prlog.h for full details):
+-//
+-//    set NSPR_LOG_MODULES=nsFtp:5
+-//    set NSPR_LOG_FILE=nspr.log
+-//
+-// this enables PR_LOG_DEBUG level information and places all output in
+-// the file nspr.log
+-//
+-PRLogModuleInfo* gFTPLog = nsnull;
+-#endif
+-#define LOG(args) PR_LOG(gFTPLog, PR_LOG_DEBUG, args)
++#ifdef MOZ_IPC
++#include "mozilla/net/NeckoChild.h"
++#endif 
++
++using namespace mozilla::net;
++#ifdef MOZ_IPC
++#include "mozilla/net/FTPChannelChild.h"
++#endif 
+ 
+ //-----------------------------------------------------------------------------
+ 
+@@ -123,6 +117,11 @@
+ nsresult
+ nsFtpProtocolHandler::Init()
+ {
++#ifdef MOZ_IPC
++    if (IsNeckoChild())
++        NeckoChild::InitNeckoChild();
++#endif // MOZ_IPC
++
+     nsresult rv;
+ 
+     if (mIdleTimeout == -1) {
+@@ -220,7 +219,18 @@
+                                         nsIChannel* *result)
+ {
+     NS_ENSURE_ARG_POINTER(uri);
+-    nsFtpChannel *channel = new nsFtpChannel(uri, proxyInfo);
++
++    nsRefPtr<FTPBaseChannel> channel;
++#ifdef MOZ_IPC
++    if (IsNeckoChild()) {
++        LOG(("NECKO_E10S_HTTP set: using experimental interprocess FTP\n"));
++        channel = new FTPChannelChild(uri, proxyInfo);
++    } else
++#endif
++    {
++        channel = new nsFtpChannel(uri, proxyInfo);
++    }
++
+     if (!channel)
+         return NS_ERROR_OUT_OF_MEMORY;
+     NS_ADDREF(channel);
+diff --git a/netwerk/protocol/http/src/HttpBaseChannel.h b/netwerk/protocol/http/src/HttpBaseChannel.h
+--- a/netwerk/protocol/http/src/HttpBaseChannel.h
++++ b/netwerk/protocol/http/src/HttpBaseChannel.h
+@@ -54,24 +54,6 @@
+ #include "nsIURI.h"
+ #include "nsISupportsPriority.h"
+ 
+-#define DIE_WITH_ASYNC_OPEN_MSG()                                              \
+-  do {                                                                         \
+-    fprintf(stderr,                                                            \
+-            "*&*&*&*&*&*&*&**&*&&*& FATAL ERROR: '%s' "                        \
+-            "called after AsyncOpen: %s +%d",                                  \
+-            __FUNCTION__, __FILE__, __LINE__);                                 \
+-    NS_ABORT();                                                                \
+-    return NS_ERROR_NOT_IMPLEMENTED;                                           \
+-  } while (0)
+-
+-#define ENSURE_CALLED_BEFORE_ASYNC_OPEN()                                      \
+-  if (mIsPending)                                                              \
+-    DIE_WITH_ASYNC_OPEN_MSG();                                                 \
+-  if (mWasOpened)                                                              \
+-    DIE_WITH_ASYNC_OPEN_MSG();                                                 \
+-  NS_ENSURE_TRUE(!mIsPending, NS_ERROR_IN_PROGRESS);                           \
+-  NS_ENSURE_TRUE(!mWasOpened, NS_ERROR_ALREADY_OPENED);
+-
+ namespace mozilla {
+ namespace net {
+ 
+diff --git a/netwerk/test/unit/test_simple_ftp.js b/netwerk/test/unit/test_simple_ftp.js
+new file mode 100644
+--- /dev/null
++++ b/netwerk/test/unit/test_simple_ftp.js
+@@ -0,0 +1,48 @@
++//
++//  Simple FTP test with remote server
++//
++//  In objdir/netwerk/test
++//   In child: export SOLO_FILE=test_simple_wrap_ftp.js; make check-one
++//   In parent: export SOLO_FILE=_tests/xpcshell/test_necko/unit/test_simple_ftp.js; make check-one
++//
++
++var server = 'ftp.mozilla.org';
++var testpath = "/README";
++var body = /files are in \/pub\/mozilla.org/; // text appearing in that file on that server
++
++var dbg=1;
++if (dbg) { print("============== START =========="); }
++
++function run_test() {
++  setup_test();
++  do_test_pending();
++}
++
++function setup_test() {
++  if (dbg) { print("============== setup_test: in"); }
++  var channel = setupChannel(testpath);
++  if (dbg) { print("============== setup_test: B"); }
++  var listener = new ChannelListener(checkRequest, channel);
++  if (dbg) { print("============== setup_test: C"); }
++  channel.asyncOpen(listener, null);
++  if (dbg) { print("============== setup_test: out"); }
++}
++
++function setupChannel(path) {
++  if (dbg) { print("============== setupChannel: in"); }
++  var ios = Components.classes["@mozilla.org/network/io-service;1"].
++                       getService(Components.interfaces.nsIIOService);
++  var uri = 'ftp://' + server + path;
++  var chan = ios.newChannel(uri, "", null);
++  var ftpchan = chan.QueryInterface(Components.interfaces.nsIFTPChannel);
++  if (dbg) { print("============== setupChannel: out"); }
++  return chan;
++}
++
++function checkRequest(request, data, context) {
++  if (dbg) { print("============== checkRequest: in"); }
++  do_check_eq(true, data.search(body) != -1);
++  do_test_finished();
++  if (dbg) { print("============== checkRequest: out"); }
++}
++
+diff --git a/netwerk/test/unit_ipc/test_simple_wrap_ftp.js b/netwerk/test/unit_ipc/test_simple_wrap_ftp.js
+new file mode 100644
+--- /dev/null
++++ b/netwerk/test/unit_ipc/test_simple_wrap_ftp.js
+@@ -0,0 +1,14 @@
++//
++// Run test script in content process instead of chrome (xpcshell's default)
++//
++// Test with e.g.
++//    cd $objdir/netwerk/test 
++//    export SOLO_FILE=test_simple_wrap_ftp.js NECKO_E10S_HTTP=1 ; make check-one
++// Options: check-interactive, MOZ_IPC_MESSAGE_LOG=1, MOZ_DEBUG_CHILD_PROCESS=1
++//    export SOLO_FILE=test_simple_wrap_ftp.js NECKO_E10S_HTTP=1 MOZ_IPC_MESSAGE_LOG=1 ; make check-one
++//    export SOLO_FILE=test_simple_wrap_ftp.js NECKO_E10S_HTTP=1 MOZ_IPC_MESSAGE_LOG=1 MOZ_DEBUG_CHILD_PROCESS=1 ; make check-interactive
++
++function run_test() {
++  run_test_in_child("../unit/test_simple_ftp.js");
++}
++
