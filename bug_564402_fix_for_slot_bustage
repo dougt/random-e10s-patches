@@ -1,0 +1,114 @@
+diff --git a/content/base/public/nsINode.h b/content/base/public/nsINode.h
+--- a/content/base/public/nsINode.h
++++ b/content/base/public/nsINode.h
+@@ -710,45 +710,45 @@ public:
+    * remove itself in case it dies before the node.  If an observer is added
+    * while observers are being notified, it may also be notified.  In general,
+    * adding observers while inside a notification is not a good idea.  An
+    * observer that is already observing the node must not be added without
+    * being removed first.
+    */
+   void AddMutationObserver(nsIMutationObserver* aMutationObserver)
+   {
+-    nsSlots* slots = GetSlots();
+-    if (slots) {
+-      NS_ASSERTION(slots->mMutationObservers.IndexOf(aMutationObserver) ==
++    nsSlots* s = GetSlots();
++    if (s) {
++      NS_ASSERTION(s->mMutationObservers.IndexOf(aMutationObserver) ==
+                    nsTArray_base::NoIndex,
+                    "Observer already in the list");
+-      slots->mMutationObservers.AppendElement(aMutationObserver);
++      s->mMutationObservers.AppendElement(aMutationObserver);
+     }
+   }
+ 
+   /**
+    * Same as above, but only adds the observer if its not observing
+    * the node already.
+    */
+   void AddMutationObserverUnlessExists(nsIMutationObserver* aMutationObserver)
+   {
+-    nsSlots* slots = GetSlots();
+-    if (slots) {
+-      slots->mMutationObservers.AppendElementUnlessExists(aMutationObserver);
++    nsSlots* s = GetSlots();
++    if (s) {
++      s->mMutationObservers.AppendElementUnlessExists(aMutationObserver);
+     }
+   }
+ 
+   /**
+    * Removes a mutation observer.
+    */
+   void RemoveMutationObserver(nsIMutationObserver* aMutationObserver)
+   {
+-    nsSlots* slots = GetExistingSlots();
+-    if (slots) {
+-      slots->mMutationObservers.RemoveElement(aMutationObserver);
++    nsSlots* s = GetExistingSlots();
++    if (s) {
++      s->mMutationObservers.RemoveElement(aMutationObserver);
+     }
+   }
+ 
+   /**
+    * Clones this node. This needs to be overriden by all node classes. aNodeInfo
+    * should be identical to this node's nodeInfo, except for the document which
+    * may be different. When cloning an element, all attributes of the element
+    * will be cloned. The children of the node will not be cloned.
+diff --git a/layout/generic/nsObjectFrame.cpp b/layout/generic/nsObjectFrame.cpp
+--- a/layout/generic/nsObjectFrame.cpp
++++ b/layout/generic/nsObjectFrame.cpp
+@@ -46,24 +46,16 @@
+ 
+ /* rendering objects for replaced elements implemented by a plugin */
+ 
+ #ifdef MOZ_WIDGET_QT
+ #include <QWidget>
+ #ifdef MOZ_X11
+ #include <QX11Info>
+ #endif
+-
+-/*
+- * "slots" gets #defined by Qt, unfortunately its a common identifier,
+- * especially it is used as a local variable name in nsIFrame.h - since
+- * we don't use the Qt #defined "slots" we undefine it again here.
+- */
+-#undef slots
+-
+ #endif
+ 
+ #include "nscore.h"
+ #include "nsCOMPtr.h"
+ #include "nsPresContext.h"
+ #include "nsIPresShell.h"
+ #include "nsWidgetsCID.h"
+ #include "nsIView.h"
+diff --git a/widget/src/qt/nsNativeThemeQt.cpp b/widget/src/qt/nsNativeThemeQt.cpp
+--- a/widget/src/qt/nsNativeThemeQt.cpp
++++ b/widget/src/qt/nsNativeThemeQt.cpp
+@@ -44,23 +44,16 @@
+ #include <QRect>
+ #include <QPainter>
+ #include <QStyleOption>
+ #include <QStyleOptionFrameV2>
+ #include <QStyleOptionButton>
+ #include <QFlags>
+ #include <QStyleOptionComboBox>
+ 
+-/*
+- * "slots" gets #defined by Qt, unfortunately its a common identifier,
+- * especially it is used as a local variable name in nsIFrame.h - since
+- * we don't use the Qt #defined "slots" we undefine it again here.
+- */
+-#undef slots
+-
+ #include "nsIFrame.h"
+ 
+ #include "nsCoord.h"
+ #include "nsNativeThemeQt.h"
+ #include "nsIDeviceContext.h"
+ #include "nsPresContext.h"
+ 
+ #include "nsRect.h"
