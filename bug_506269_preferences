@@ -345,14 +345,14 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
 +                        prefs->AddObserver("", parent, PR_FALSE);
 +                    }
                  }
-                 obs->AddObserver(
-                   parent, NS_IOSERVICE_SET_OFFLINE_TOPIC, PR_FALSE); 
+                 obs->AddObserver(parent,
+                                  NS_E10S_IOSERVICE_SET_OFFLINE_TOPIC,
+                                  PR_FALSE); 
              }
              nsCOMPtr<nsIThreadInternal>
                  threadInt(do_QueryInterface(NS_GetCurrentThread()));
              if (threadInt) {
-                 threadInt->GetObserver(getter_AddRefs(parent->mOldObserver));
-@@ -155,16 +163,155 @@ ContentProcessParent::~ContentProcessPar
+@@ -156,16 +164,155 @@ ContentProcessParent::~ContentProcessPar
  }
  
  bool
@@ -508,7 +508,7 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
  void
  DeleteSubprocess(GeckoChildProcessHost* aSubprocess)
  {
-@@ -173,28 +320,47 @@ DeleteSubprocess(GeckoChildProcessHost* 
+@@ -174,28 +321,48 @@ DeleteSubprocess(GeckoChildProcessHost* 
  }
  
  NS_IMETHODIMP
@@ -533,7 +533,7 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
          mSubprocess = nsnull;
      }
  
-     if (!strcmp(aTopic, NS_IOSERVICE_SET_OFFLINE_TOPIC) && mSubprocess) {
+     if (!strcmp(aTopic, NS_E10S_IOSERVICE_SET_OFFLINE_TOPIC) && mSubprocess) {
        NS_ConvertUTF16toUTF8 dataStr(aData);
        const char *offline = dataStr.get();
        SendSetOffline(!strcmp(offline, "true") ? true : false);
@@ -548,6 +548,7 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
 +        // TODO: get the prefNAme here and pass the whole prefName
 +        SendNotifyRemotePrefObserver(strData);
 +    }
++
      return NS_OK;
  }
  

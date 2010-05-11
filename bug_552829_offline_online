@@ -73,7 +73,7 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
      if (gSingleton && !gSingleton->IsAlive())
          gSingleton = nsnull;
      
-@@ -70,16 +72,18 @@ ContentProcessParent::GetSingleton()
+@@ -70,16 +72,19 @@ ContentProcessParent::GetSingleton()
          if (parent) {
              nsCOMPtr<nsIObserverService> obs =
                  do_GetService("@mozilla.org/observer-service;1");
@@ -82,8 +82,9 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
                                                    PR_FALSE))) {
                      gSingleton = parent;
                  }
-+                obs->AddObserver(
-+                  parent, NS_IOSERVICE_SET_OFFLINE_TOPIC, PR_FALSE); 
++                obs->AddObserver(parent,
++                                 NS_E10S_IOSERVICE_SET_OFFLINE_TOPIC,
++                                 PR_FALSE); 
              }
              nsCOMPtr<nsIThreadInternal>
                  threadInt(do_QueryInterface(NS_GetCurrentThread()));
@@ -102,7 +103,7 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
          mSubprocess = nsnull;
      }
 +
-+    if (!strcmp(aTopic, NS_IOSERVICE_SET_OFFLINE_TOPIC) && mSubprocess) {
++    if (!strcmp(aTopic, NS_E10S_IOSERVICE_SET_OFFLINE_TOPIC) && mSubprocess) {
 +      NS_ConvertUTF16toUTF8 dataStr(aData);
 +      const char *offline = dataStr.get();
 +      SendSetOffline(!strcmp(offline, "true") ? true : false);
@@ -156,7 +157,7 @@ diff --git a/netwerk/base/src/nsIOService.cpp b/netwerk/base/src/nsIOService.cpp
  #define PORT_PREF_PREFIX           "network.security.ports."
  #define PORT_PREF(x)               PORT_PREF_PREFIX x
  #define AUTODIAL_PREF              "network.autodial-helper.enabled"
-@@ -657,21 +658,35 @@ nsIOService::SetOffline(PRBool offline)
+@@ -657,21 +658,36 @@ nsIOService::SetOffline(PRBool offline)
      // SetOffline() may re-enter while it's shutting down services.
      // If that happens, save the most recent value and it will be
      // processed when the first SetOffline() call is done bringing
@@ -177,9 +178,10 @@ diff --git a/netwerk/base/src/nsIOService.cpp b/netwerk/base/src/nsIOService.cpp
 +    if (XRE_GetProcessType() == GeckoProcessType_Default) {
 +        if (observerService) {
 +            (void)observerService->NotifyObservers(nsnull,
-+                NS_IOSERVICE_SET_OFFLINE_TOPIC, offline ? 
-+                NS_LITERAL_STRING("true").get() :
-+                NS_LITERAL_STRING("false").get());
++                                                   NS_E10S_IOSERVICE_SET_OFFLINE_TOPIC,
++                                                   offline ? 
++                                                   NS_LITERAL_STRING("true").get() :
++                                                   NS_LITERAL_STRING("false").get());
 +        }
 +    }
 +#endif
