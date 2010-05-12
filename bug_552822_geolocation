@@ -1,3 +1,27 @@
+diff --git a/.hgignore b/.hgignore
+--- a/.hgignore
++++ b/.hgignore
+@@ -1,16 +1,20 @@
+ # .hgignore - List of filenames hg should ignore
+ 
+ # Filenames that should be ignored wherever they appear
+ ~$
+ \.py(c|o)$
+ (?i)(^|/)TAGS$
+ (^|/)ID$
+ (^|/)\.DS_Store$
++\.rej$
++\.orig$
++\.~$
++\.#$
+ 
+ # User files that may appear at the root
+ ^\.mozconfig
+ ^mozconfig
+ ^configure$
+ ^config\.cache$
+ ^config\.log$
+ 
 diff --git a/dom/base/Makefile.in b/dom/base/Makefile.in
 --- a/dom/base/Makefile.in
 +++ b/dom/base/Makefile.in
@@ -411,6 +435,111 @@ diff --git a/dom/src/geolocation/Makefile.in b/dom/src/geolocation/Makefile.in
  include $(topsrcdir)/config/rules.mk
  
  DEFINES += -D_IMPL_NS_LAYOUT
+diff --git a/dom/src/geolocation/PGeolocationRequest.ipdl b/dom/src/geolocation/PGeolocationRequest.ipdl
+new file mode 100644
+--- /dev/null
++++ b/dom/src/geolocation/PGeolocationRequest.ipdl
+@@ -0,0 +1,55 @@
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is mozilla.org code.
++ *
++ * The Initial Developer of the Original Code is
++ *  The Mozilla Foundation
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++include protocol PIFrameEmbedding;
++
++namespace mozilla {
++namespace dom {
++
++rpc protocol PGeolocationRequest
++{
++ manager PIFrameEmbedding;
++
++parent:
++  prompt();
++
++child:
++  __delete__(bool allow);
++};
++
++
++} // namespace dom
++} // namespace mozilla
+diff --git a/dom/src/geolocation/ipdl.mk b/dom/src/geolocation/ipdl.mk
+new file mode 100644
+--- /dev/null
++++ b/dom/src/geolocation/ipdl.mk
+@@ -0,0 +1,40 @@
++# ***** BEGIN LICENSE BLOCK *****
++# Version: MPL 1.1/GPL 2.0/LGPL 2.1
++#
++# The contents of this file are subject to the Mozilla Public License Version
++# 1.1 (the "License"); you may not use this file except in compliance with
++# the License. You may obtain a copy of the License at
++# http://www.mozilla.org/MPL/
++#
++# Software distributed under the License is distributed on an "AS IS" basis,
++# WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++# for the specific language governing rights and limitations under the
++# License.
++#
++# The Original Code is Geolocation code.
++#
++# The Initial Developer of the Original Code is
++#   the Mozilla Foundation.
++# Portions created by the Initial Developer are Copyright (C) 2010
++# the Initial Developer. All Rights Reserved.
++#
++# Contributor(s):
++#   Josh Matthews <josh@joshmatthews.net> (Initial Developer)
++#
++# Alternatively, the contents of this file may be used under the terms of
++# either the GNU General Public License Version 2 or later (the "GPL"), or
++# the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++# in which case the provisions of the GPL or the LGPL are applicable instead
++# of those above. If you wish to allow use of your version of this file only
++# under the terms of either the GPL or the LGPL, and not to allow others to
++# use your version of this file under the terms of the MPL, indicate your
++# decision by deleting the provisions above and replace them with the notice
++# and other provisions required by the GPL or the LGPL. If you do not delete
++# the provisions above, a recipient may use your version of this file under
++# the terms of any one of the MPL, the GPL or the LGPL.
++#
++# ***** END LICENSE BLOCK *****
++
++IPDLSRCS = \
++	PGeolocationRequest.ipdl \
++	$(NULL)
 diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolocation.cpp
 --- a/dom/src/geolocation/nsGeolocation.cpp
 +++ b/dom/src/geolocation/nsGeolocation.cpp
@@ -456,7 +585,7 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
  #include "nsICategoryManager.h"
  #include "nsISupportsPrimitives.h"
  #include "nsServiceManagerUtils.h"
-@@ -224,16 +248,25 @@ nsGeolocationRequest::GetRequestingWindo
+@@ -225,16 +249,25 @@ nsGeolocationRequest::GetRequestingWindo
    NS_ENSURE_ARG_POINTER(aRequestingWindow);
  
    nsCOMPtr<nsIDOMWindow> window = do_QueryReferent(mLocator->GetOwner());
@@ -482,7 +611,7 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
    // remove ourselves from the locators callback lists.
    mLocator->RemoveRequest(this);
    return NS_OK;
-@@ -334,16 +367,26 @@ nsGeolocationRequest::SendLocation(nsIDO
+@@ -335,16 +368,26 @@ nsGeolocationRequest::SendLocation(nsIDO
  void
  nsGeolocationRequest::Shutdown()
  {
@@ -509,7 +638,7 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
    NS_INTERFACE_MAP_ENTRY(nsIGeolocationUpdate)
    NS_INTERFACE_MAP_ENTRY(nsIObserver)
  NS_INTERFACE_MAP_END
-@@ -850,22 +893,17 @@ nsGeolocation::GetCurrentPosition(nsIDOM
+@@ -851,22 +894,17 @@ nsGeolocation::GetCurrentPosition(nsIDOM
    nsRefPtr<nsGeolocationRequest> request = new nsGeolocationRequest(this, callback, errorCallback, options);
    if (!request)
      return NS_ERROR_OUT_OF_MEMORY;
@@ -533,7 +662,7 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
    if (!nsContentUtils::IsCallerChrome())
      return NS_ERROR_FAILURE;
  
-@@ -894,21 +932,17 @@ nsGeolocation::WatchPosition(nsIDOMGeoPo
+@@ -895,21 +933,17 @@ nsGeolocation::WatchPosition(nsIDOMGeoPo
    nsRefPtr<nsGeolocationRequest> request = new nsGeolocationRequest(this, callback, errorCallback, options);
    if (!request)
      return NS_ERROR_OUT_OF_MEMORY;
@@ -556,7 +685,7 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
      return NS_OK;
    }
  
-@@ -956,12 +990,158 @@ nsGeolocation::WindowOwnerStillExists()
+@@ -957,12 +991,158 @@ nsGeolocation::WindowOwnerStillExists()
      nsPIDOMWindow* outer = window->GetOuterWindow();
      if (!outer || outer->GetCurrentInnerWindow() != window)
        return PR_FALSE;
@@ -695,12 +824,12 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
 +      mPrincipal = principal;
 +      mTarget    = target;
 +      mElement   = element;
++      mProxy     = nsnull;
 +    }
 +
 +    GeolocationRequestParent::~GeolocationRequestParent()
 +    {
 +      MOZ_COUNT_DTOR(GeolocationRequestParent);
-+
 +      delete mProxy;
 +    }
 +
@@ -815,6 +944,104 @@ diff --git a/dom/src/geolocation/nsGeolocation.h b/dom/src/geolocation/nsGeoloca
    nsRefPtr<nsGeolocationService> mService;
  };
 +
+diff --git a/dom/src/geolocation/nsGeolocationOOP.h b/dom/src/geolocation/nsGeolocationOOP.h
+new file mode 100644
+--- /dev/null
++++ b/dom/src/geolocation/nsGeolocationOOP.h
+@@ -0,0 +1,93 @@
++/* ***** BEGIN LICENSE BLOCK *****
++ * Version: MPL 1.1/GPL 2.0/LGPL 2.1
++ *
++ * The contents of this file are subject to the Mozilla Public License Version
++ * 1.1 (the "License"); you may not use this file except in compliance with
++ * the License. You may obtain a copy of the License at
++ * http://www.mozilla.org/MPL/
++ *
++ * Software distributed under the License is distributed on an "AS IS" basis,
++ * WITHOUT WARRANTY OF ANY KIND, either express or implied. See the License
++ * for the specific language governing rights and limitations under the
++ * License.
++ *
++ * The Original Code is mozilla.org code.
++ *
++ * The Initial Developer of the Original Code is
++ *  The Mozilla Foundation
++ * Portions created by the Initial Developer are Copyright (C) 2010
++ * the Initial Developer. All Rights Reserved.
++ *
++ * Contributor(s):
++ *
++ * Alternatively, the contents of this file may be used under the terms of
++ * either the GNU General Public License Version 2 or later (the "GPL"), or
++ * the GNU Lesser General Public License Version 2.1 or later (the "LGPL"),
++ * in which case the provisions of the GPL or the LGPL are applicable instead
++ * of those above. If you wish to allow use of your version of this file only
++ * under the terms of either the GPL or the LGPL, and not to allow others to
++ * use your version of this file under the terms of the MPL, indicate your
++ * decision by deleting the provisions above and replace them with the notice
++ * and other provisions required by the GPL or the LGPL. If you do not delete
++ * the provisions above, a recipient may use your version of this file under
++ * the terms of any one of the MPL, the GPL or the LGPL.
++ *
++ * ***** END LICENSE BLOCK ***** */
++
++#ifndef __nsGeolocationOOP_h__
++#define __nsGeolocationOOP_h__
++
++#ifdef MOZ_IPC
++#include "base/basictypes.h"
++#endif
++
++#include "nsIGeolocationProvider.h"
++#include "nsString.h"
++
++#include "nsIDOMWindow.h"
++#include "nsIDOMElement.h"
++
++#include "mozilla/dom/PGeolocationRequestParent.h"
++
++class nsGeolocationRequestProxy;
++
++namespace mozilla {
++  namespace dom {
++
++    class GeolocationRequestParent : public PGeolocationRequestParent
++    {
++      public:
++        GeolocationRequestParent(nsIDOMWindow *target, nsIDOMElement *element, const nsCString& principal);
++        virtual ~GeolocationRequestParent();
++
++        virtual bool Recvprompt();
++
++        nsCString mPrincipal;
++
++	nsCOMPtr<nsIDOMWindow> mTarget;
++	nsCOMPtr<nsIDOMElement> mElement;
++
++	nsGeolocationRequestProxy *mProxy;
++    };
++
++  } // namespace dom                                                                                                                                                                                                                   
++} // namespace mozilla
++
++class nsGeolocationRequestProxy : public nsIGeolocationRequest {
++ public:
++  nsGeolocationRequestProxy();
++  virtual ~nsGeolocationRequestProxy();
++
++  nsresult Init(mozilla::dom::GeolocationRequestParent* parent);
++
++
++  NS_DECL_ISUPPORTS;
++  NS_DECL_NSIGEOLOCATIONREQUEST;
++
++ private:
++  // the GeolocationRequestParent owns this.
++  mozilla::dom::GeolocationRequestParent* mParent;
++};
++
++
++#endif // __nsGeolocationOOP_h__
 diff --git a/ipc/ipdl/Makefile.in b/ipc/ipdl/Makefile.in
 --- a/ipc/ipdl/Makefile.in
 +++ b/ipc/ipdl/Makefile.in
@@ -832,14 +1059,14 @@ diff --git a/ipc/ipdl/Makefile.in b/ipc/ipdl/Makefile.in
    dom/ipc  \
    netwerk/ipc  \
    netwerk/protocol/http/src  \
+   netwerk/protocol/ftp/src  \
    netwerk/cookie/src  \
    ipc/ipdl/test/cxx  \
    ipc/testshell  \
-   js/src/ipc  \
 diff --git a/layout/build/Makefile.in b/layout/build/Makefile.in
 --- a/layout/build/Makefile.in
 +++ b/layout/build/Makefile.in
-@@ -228,16 +228,21 @@ ifdef MOZ_SYDNEYAUDIO
+@@ -232,16 +232,21 @@ ifdef MOZ_SYDNEYAUDIO
  ifeq ($(OS_ARCH),Linux)
  EXTRA_DSO_LDOPTS += $(MOZ_ALSA_LIBS)
  endif
@@ -877,6 +1104,7 @@ diff --git a/layout/build/nsLayoutModule.cpp b/layout/build/nsLayoutModule.cpp
 +#include "base/basictypes.h"
 +#endif
 +
+ #include "xpcmodule.h"
  #include "nsLayoutStatics.h"
  #include "nsContentCID.h"
  #include "nsContentDLF.h"
@@ -884,4 +1112,3 @@ diff --git a/layout/build/nsLayoutModule.cpp b/layout/build/nsLayoutModule.cpp
  #include "nsDataDocumentContentPolicy.h"
  #include "nsNoDataProtocolContentPolicy.h"
  #include "nsDOMCID.h"
- #include "nsHTMLContentSerializer.h"
