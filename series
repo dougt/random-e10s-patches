@@ -1,15 +1,9 @@
 bug_564402_fix_for_slot_bustage
 
 # GFX
-<<<<<<< local
-# landed? bug_545632_16bpp
+bug_545632_16bpp
 #bug_545632_16bpp_qt
 #bug_xxxxxx_gfx_image_16bpp_enabler
-=======
-bug_545632_16bpp
-bug_545632_16bpp_qt
-bug_xxxxxx_gfx_image_16bpp_enabler
->>>>>>> other
 
 # necko
 bug_536289_ftp
