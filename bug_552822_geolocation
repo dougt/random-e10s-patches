@@ -1073,3 +1073,24 @@ diff --git a/layout/build/nsLayoutModule.cpp b/layout/build/nsLayoutModule.cpp
  #include "nsDataDocumentContentPolicy.h"
  #include "nsNoDataProtocolContentPolicy.h"
  #include "nsDOMCID.h"
+diff --git a/toolkit/mozapps/extensions/PAddonManager.ipdl b/toolkit/mozapps/extensions/PAddonManager.ipdl
+new file mode 100644
+--- /dev/null
++++ b/toolkit/mozapps/extensions/PAddonManager.ipdl
+@@ -0,0 +1,16 @@
++include protocol PIFrameEmbedding;
++
++namespace mozilla {
++namespace dom {
++
++rpc protocol PAddonManager
++{
++  manager PIFrameEmbedding;
++
++child:
++  InstallAddonsFromWebpage();
++  __delete__(PRInt32 x);
++};
++
++}
++}
