@@ -6,7 +6,7 @@ bug_545632_16bpp
 #bug_xxxxxx_gfx_image_16bpp_enabler
 
 # necko
-bug_536289_ftp
+# bug_536289_ftp
 
 # preferences
 # bustage - bug_506269_preferences
