@@ -14,5 +14,3 @@ bug_536289_ftp
 # misc
 bug_561457_shutdown_crash_bandaide
 bug_564929_conditional_jump_in_makefullscreen
-
-bug_552822_geolocation
