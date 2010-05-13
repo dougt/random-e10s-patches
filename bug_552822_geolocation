@@ -1,27 +1,3 @@
-diff --git a/.hgignore b/.hgignore
---- a/.hgignore
-+++ b/.hgignore
-@@ -1,16 +1,20 @@
- # .hgignore - List of filenames hg should ignore
- 
- # Filenames that should be ignored wherever they appear
- ~$
- \.py(c|o)$
- (?i)(^|/)TAGS$
- (^|/)ID$
- (^|/)\.DS_Store$
-+\.rej$
-+\.orig$
-+\.~$
-+\.#$
- 
- # User files that may appear at the root
- ^\.mozconfig
- ^mozconfig
- ^configure$
- ^config\.cache$
- ^config\.log$
- 
 diff --git a/dom/base/Makefile.in b/dom/base/Makefile.in
 --- a/dom/base/Makefile.in
 +++ b/dom/base/Makefile.in
@@ -142,7 +118,7 @@ diff --git a/dom/ipc/Makefile.in b/dom/ipc/Makefile.in
 diff --git a/dom/ipc/PIFrameEmbedding.ipdl b/dom/ipc/PIFrameEmbedding.ipdl
 --- a/dom/ipc/PIFrameEmbedding.ipdl
 +++ b/dom/ipc/PIFrameEmbedding.ipdl
-@@ -37,16 +37,17 @@
+@@ -37,34 +37,38 @@
   *
   * ***** END LICENSE BLOCK ***** */
  
@@ -156,11 +132,14 @@ diff --git a/dom/ipc/PIFrameEmbedding.ipdl b/dom/ipc/PIFrameEmbedding.ipdl
  include "mozilla/TabTypes.h";
  include "TabMessageUtils.h";
  include "gfxMatrix.h";
++include "mozilla/net/NeckoMessageUtils.h";
  
++using IPC::URI;
  using MagicWindowHandle;
  using RemoteDOMEvent;
  using gfxMatrix;
-@@ -55,16 +56,17 @@ namespace mozilla {
+ 
+ namespace mozilla {
  namespace dom {
  
  rpc protocol PIFrameEmbedding
@@ -178,7 +157,7 @@ diff --git a/dom/ipc/PIFrameEmbedding.ipdl b/dom/ipc/PIFrameEmbedding.ipdl
      /**
       * When child sends this message, parent should move focus to
       * the next or previous focusable element.
-@@ -94,16 +96,19 @@ parent:
+@@ -94,16 +98,19 @@ parent:
      rpc createWindow() returns (PIFrameEmbedding window);
  
      PContextWrapper();
@@ -188,7 +167,7 @@ diff --git a/dom/ipc/PIFrameEmbedding.ipdl b/dom/ipc/PIFrameEmbedding.ipdl
  
      sendAsyncMessageToParent(nsString aMessage, nsString aJSON);
 +
-+    PGeolocationRequest(nsCString principal);
++    PGeolocationRequest(URI uri);
 +
  child:
      createWidget(MagicWindowHandle parentWidget);
@@ -226,7 +205,7 @@ diff --git a/dom/ipc/TabChild.cpp b/dom/ipc/TabChild.cpp
  }
  
  NS_IMETHODIMP
-@@ -664,16 +665,30 @@ TabChild::RecvPDocumentRendererShmemCons
+@@ -664,16 +665,32 @@ TabChild::RecvPDocumentRendererShmemCons
  
      dirtyArea = aMatrix.Transform(dirtyArea);
  
@@ -235,8 +214,11 @@ diff --git a/dom/ipc/TabChild.cpp b/dom/ipc/TabChild.cpp
                                                         aBuf);
  }
  
++/* The PGeolocationRequestChild actor is implemented by a refcounted
++   nsGeolocationRequest, and has an identical lifetime. */
++
 +PGeolocationRequestChild*
-+TabChild::AllocPGeolocationRequest(const nsCString& unused)
++TabChild::AllocPGeolocationRequest(const IPC::URI&)
 +{
 +  NS_RUNTIMEABORT("unused");
 +  return nsnull;
@@ -245,7 +227,6 @@ diff --git a/dom/ipc/TabChild.cpp b/dom/ipc/TabChild.cpp
 +bool
 +TabChild::DeallocPGeolocationRequest(PGeolocationRequestChild* actor)
 +{
-+    /* the geolocation child actor is called in nsGeolocation and does not need to be delete here */
 +  return true;
 +}
 +
@@ -307,7 +288,7 @@ diff --git a/dom/ipc/TabChild.h b/dom/ipc/TabChild.h
              const PRInt32& aBufH,
              Shmem& aBuf);
  
-+    virtual PGeolocationRequestChild* AllocPGeolocationRequest(const nsCString& principal);
++    virtual PGeolocationRequestChild* AllocPGeolocationRequest(const IPC::URI& uri);
 +    virtual bool DeallocPGeolocationRequest(PGeolocationRequestChild* actor);
 +
      nsIWebNavigation* WebNavigation() { return mWebNav; }
@@ -340,7 +321,7 @@ diff --git a/dom/ipc/TabParent.cpp b/dom/ipc/TabParent.cpp
  using mozilla::jsipc::ContextWrapperParent;
  
  // The flags passed by the webProgress notifications are 16 bits shifted
-@@ -444,16 +446,34 @@ TabParent::AllocPContextWrapper()
+@@ -444,16 +446,29 @@ TabParent::AllocPContextWrapper()
  
  bool
  TabParent::DeallocPContextWrapper(PContextWrapperParent* actor)
@@ -350,14 +331,9 @@ diff --git a/dom/ipc/TabParent.cpp b/dom/ipc/TabParent.cpp
  }
  
 +PGeolocationRequestParent*
-+TabParent::AllocPGeolocationRequest(const nsCString& principal)
++TabParent::AllocPGeolocationRequest(const URI::URI& uri)
 +{
-+  nsCOMPtr<nsIContent> content = do_QueryInterface(mFrameElement);
-+  nsCOMPtr<nsIDOMWindowInternal> chromeWindow = do_QueryInterface(content->GetOwnerDoc()->GetWindow());
-+
-+  nsCOMPtr<nsIDOMWindow> window;
-+  chromeWindow->GetContent(getter_AddRefs(window));
-+  return new GeolocationRequestParent(chromeWindow, mFrameElement, principal);
++  return new GeolocationRequestParent(mFrameElement, uri);
 +}
 +  
 +bool
@@ -387,7 +363,7 @@ diff --git a/dom/ipc/TabParent.h b/dom/ipc/TabParent.h
      virtual PContextWrapperParent* AllocPContextWrapper();
      virtual bool DeallocPContextWrapper(PContextWrapperParent* actor);
  
-+    virtual PGeolocationRequestParent* AllocPGeolocationRequest(const nsCString& principal);
++    virtual PGeolocationRequestParent* AllocPGeolocationRequest(const IPC::URI& uri);
 +    virtual bool DeallocPGeolocationRequest(PGeolocationRequestParent* actor);
 +
      JSBool GetGlobalJSObject(JSContext* cx, JSObject** globalp);
@@ -439,7 +415,7 @@ diff --git a/dom/src/geolocation/PGeolocationRequest.ipdl b/dom/src/geolocation/
 new file mode 100644
 --- /dev/null
 +++ b/dom/src/geolocation/PGeolocationRequest.ipdl
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,59 @@
 +/* ***** BEGIN LICENSE BLOCK *****
 + * Version: MPL 1.1/GPL 2.0/LGPL 2.1
 + *
@@ -461,6 +437,7 @@ new file mode 100644
 + * the Initial Developer. All Rights Reserved.
 + *
 + * Contributor(s):
++ *  Doug Turner <dougt@mozilla.com>  (Original Author)
 + *
 + * Alternatively, the contents of this file may be used under the terms of
 + * either the GNU General Public License Version 2 or later (the "GPL"), or
@@ -477,13 +454,16 @@ new file mode 100644
 + * ***** END LICENSE BLOCK ***** */
 +
 +include protocol PIFrameEmbedding;
++include "mozilla/net/NeckoMessageUtils.h";
++
++using IPC::URI;
 +
 +namespace mozilla {
 +namespace dom {
 +
-+rpc protocol PGeolocationRequest
++protocol PGeolocationRequest
 +{
-+ manager PIFrameEmbedding;
++  manager PIFrameEmbedding;
 +
 +parent:
 +  prompt();
@@ -543,7 +523,7 @@ new file mode 100644
 diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolocation.cpp
 --- a/dom/src/geolocation/nsGeolocation.cpp
 +++ b/dom/src/geolocation/nsGeolocation.cpp
-@@ -29,17 +29,41 @@
+@@ -29,16 +29,37 @@
   * use your version of this file under the terms of the MPL, indicate your
   * decision by deleting the provisions above and replace them with the notice
   * and other provisions required by the GPL or the LGPL. If you do not delete
@@ -552,7 +532,6 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
   *
   * ***** END LICENSE BLOCK ***** */
  
-+
 +#ifdef MOZ_IPC
 +#include "nsGeolocationOOP.h"
 +#include "nsXULAppAPI.h"
@@ -570,13 +549,11 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
 +#include "nsIDocShellTreeItem.h"
 +#include "nsIWebProgressListener2.h"
 +
-+
 +#include "nsDOMEventTargetHelper.h"
 +#include "TabChild.h"
 +#endif
 +
  #include "nsGeolocation.h"
-+
  #include "nsAutoPtr.h"
  #include "nsCOMPtr.h"
  #include "nsIDOMWindow.h"
@@ -584,9 +561,7 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
  #include "nsComponentManagerUtils.h"
  #include "nsICategoryManager.h"
  #include "nsISupportsPrimitives.h"
- #include "nsServiceManagerUtils.h"
-@@ -225,16 +249,25 @@ nsGeolocationRequest::GetRequestingWindo
-   NS_ENSURE_ARG_POINTER(aRequestingWindow);
+@@ -226,16 +247,24 @@ nsGeolocationRequest::GetRequestingWindo
  
    nsCOMPtr<nsIDOMWindow> window = do_QueryReferent(mLocator->GetOwner());
    window.forget(aRequestingWindow);
@@ -594,8 +569,7 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
    return NS_OK;
  }
  
-+
-+NS_IMETHODIMP
+ NS_IMETHODIMP
 +nsGeolocationRequest::GetRequestingElement(nsIDOMElement * *aRequestingElement)
 +{
 +  NS_ENSURE_ARG_POINTER(aRequestingElement);
@@ -603,7 +577,7 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
 +  return NS_OK;
 +}
 +
- NS_IMETHODIMP
++NS_IMETHODIMP
  nsGeolocationRequest::Cancel()
  {
    NotifyError(nsIDOMGeoPositionError::PERMISSION_DENIED);
@@ -611,7 +585,8 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
    // remove ourselves from the locators callback lists.
    mLocator->RemoveRequest(this);
    return NS_OK;
-@@ -335,16 +368,26 @@ nsGeolocationRequest::SendLocation(nsIDO
+ }
+@@ -335,16 +364,26 @@ nsGeolocationRequest::SendLocation(nsIDO
  void
  nsGeolocationRequest::Shutdown()
  {
@@ -638,7 +613,7 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
    NS_INTERFACE_MAP_ENTRY(nsIGeolocationUpdate)
    NS_INTERFACE_MAP_ENTRY(nsIObserver)
  NS_INTERFACE_MAP_END
-@@ -851,22 +894,17 @@ nsGeolocation::GetCurrentPosition(nsIDOM
+@@ -851,22 +890,17 @@ nsGeolocation::GetCurrentPosition(nsIDOM
    nsRefPtr<nsGeolocationRequest> request = new nsGeolocationRequest(this, callback, errorCallback, options);
    if (!request)
      return NS_ERROR_OUT_OF_MEMORY;
@@ -662,7 +637,7 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
    if (!nsContentUtils::IsCallerChrome())
      return NS_ERROR_FAILURE;
  
-@@ -895,21 +933,17 @@ nsGeolocation::WatchPosition(nsIDOMGeoPo
+@@ -895,21 +929,17 @@ nsGeolocation::WatchPosition(nsIDOMGeoPo
    nsRefPtr<nsGeolocationRequest> request = new nsGeolocationRequest(this, callback, errorCallback, options);
    if (!request)
      return NS_ERROR_OUT_OF_MEMORY;
@@ -685,7 +660,7 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
      return NS_OK;
    }
  
-@@ -957,12 +991,158 @@ nsGeolocation::WindowOwnerStillExists()
+@@ -957,12 +987,153 @@ nsGeolocation::WindowOwnerStillExists()
      nsPIDOMWindow* outer = window->GetOuterWindow();
      if (!outer || outer->GetCurrentInnerWindow() != window)
        return PR_FALSE;
@@ -699,9 +674,6 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
 +{
 +#ifdef MOZ_IPC
 +  if (XRE_GetProcessType() == GeckoProcessType_Content) {
-+
-+    mURI->GetSpec(mURIString);
-+
 +    nsCOMPtr<nsPIDOMWindow> window = do_QueryReferent(mOwner);
 +    if (!window)
 +      return;
@@ -710,7 +682,7 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
 +
 +    nsCOMPtr<nsIDocShellTreeItem> item = do_QueryInterface(docshell);
 +    NS_ASSERTION(item, "doc shell tree item is null");
-+    if (!window)
++    if (!item)
 +      return;
 +
 +    nsCOMPtr<nsIDocShellTreeOwner> owner;
@@ -718,14 +690,15 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
 +    NS_ASSERTION(owner, "doc shell tree owner is null");
 +    
 +    nsCOMPtr<nsITabChild> tabchild = do_GetInterface(owner);
-+    NS_ASSERTION(tabchild, "tabchild is null");
 +    if (!tabchild)
 +      return;
 +
 +    // because owner implements nsITabChild, we can assume that it is
 +    // the one and only TabChild.
 +    mozilla::dom::TabChild* child = static_cast<mozilla::dom::TabChild*>(tabchild.get());
-+    mozilla::dom::PGeolocationRequestChild* a = child->SendPGeolocationRequestConstructor(request, mURIString);
++    
++    mozilla::dom::PGeolocationRequestChild* a = 
++      child->SendPGeolocationRequestConstructor(request, IPC::URI(mURI));
 +
 +    (void) a->Sendprompt();
 +    return;
@@ -734,10 +707,8 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
 +
 +  nsCOMPtr<nsIGeolocationPrompt> prompt = do_GetService(NS_GEOLOCATION_PROMPT_CONTRACTID);
 +  NS_ASSERTION(prompt, "null geolocation prompt.  geolocation will not work without one.");
-+  if (prompt == nsnull)
-+    return;
-+  
-+  prompt->Prompt(request);
++  if (prompt)
++    prompt->Prompt(request);
 +}
 +
  #ifndef WINCE_WINDOWS_MOBILE
@@ -747,10 +718,12 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
 +
 +nsGeolocationRequestProxy::nsGeolocationRequestProxy()
 +{
++  MOZ_COUNT_CTOR(nsGeolocationRequestProxy);
 +}
 +
 +nsGeolocationRequestProxy::~nsGeolocationRequestProxy()
 +{
++  MOZ_COUNT_DTOR(nsGeolocationRequestProxy);
 +}
 +
 +nsresult
@@ -761,7 +734,8 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
 +
 +  nsCOMPtr<nsIGeolocationPrompt> prompt = do_GetService(NS_GEOLOCATION_PROMPT_CONTRACTID);
 +  NS_ASSERTION(prompt, "null geolocation prompt.  geolocation will not work without one.");
-+  prompt->Prompt(this);
++  if (prompt)
++    prompt->Prompt(this);
 +  return NS_OK;
 +}
 +
@@ -770,28 +744,25 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
 +NS_IMETHODIMP
 +nsGeolocationRequestProxy::GetRequestingWindow(nsIDOMWindow * *aRequestingWindow)
 +{
-+  NS_ASSERTION(mParent && mParent->mTarget.get(), "No parent for request");
-+  NS_ADDREF(*aRequestingWindow = mParent->mTarget);
++  NS_ENSURE_ARG_POINTER(aRequestingWindow);
++  *aRequestingWindow = nsnull;
 +  return NS_OK;
 +}
 +
 +NS_IMETHODIMP
 +nsGeolocationRequestProxy::GetRequestingURI(nsIURI * *aRequestingURI)
 +{
++  NS_ENSURE_ARG_POINTER(aRequestingURI);
 +  NS_ASSERTION(mParent, "No parent for request");
 +
-+  nsCOMPtr<nsIURI> url;
-+  nsresult rv = NS_NewURI(getter_AddRefs(url), mParent->mPrincipal);
-+  if (NS_FAILED(rv))
-+    return rv;
-+
-+  NS_ADDREF(*aRequestingURI = url);
++  NS_ADDREF(*aRequestingURI = mParent->mURI);
 +  return NS_OK;
 +}
 +
 +NS_IMETHODIMP
 +nsGeolocationRequestProxy::GetRequestingElement(nsIDOMElement * *aRequestingElement)
 +{
++  NS_ENSURE_ARG_POINTER(aRequestingElement);
 +  NS_ASSERTION(mParent && mParent->mElement.get(), "No parent for request");
 +  NS_ADDREF(*aRequestingElement = mParent->mElement);
 +  return NS_OK;
@@ -801,7 +772,7 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
 +nsGeolocationRequestProxy::Cancel()
 +{
 +  NS_ASSERTION(mParent, "No parent for request");
-+  mozilla::dom::GeolocationRequestParent::Send__delete__(mParent, false);
++  (void) mozilla::dom::GeolocationRequestParent::Send__delete__(mParent, false);
 +  return NS_OK;
 +}
 +
@@ -809,41 +780,40 @@ diff --git a/dom/src/geolocation/nsGeolocation.cpp b/dom/src/geolocation/nsGeolo
 +nsGeolocationRequestProxy::Allow()
 +{
 +  NS_ASSERTION(mParent, "No parent for request");
-+  mozilla::dom::GeolocationRequestParent::Send__delete__(mParent, true);
++  (void) mozilla::dom::GeolocationRequestParent::Send__delete__(mParent, true);
 +  return NS_OK;
 +}
 +
-+ 
 +namespace mozilla {
-+  namespace dom {
++namespace dom {
 +
-+    GeolocationRequestParent::GeolocationRequestParent(nsIDOMWindow *target, nsIDOMElement *element, const nsCString& principal)
-+    {
-+      MOZ_COUNT_CTOR(GeolocationRequestParent);
++GeolocationRequestParent::GeolocationRequestParent(nsIDOMElement *element, const IPC::URI& uri)
++{
++  MOZ_COUNT_CTOR(GeolocationRequestParent);
++  
++  mURI       = uri;
++  mElement   = element;
++  mProxy     = nsnull;
++}
 +
-+      mPrincipal = principal;
-+      mTarget    = target;
-+      mElement   = element;
-+      mProxy     = nsnull;
-+    }
++GeolocationRequestParent::~GeolocationRequestParent()
++{
++  MOZ_COUNT_DTOR(GeolocationRequestParent);
++  delete mProxy;
++}
++  
++bool
++GeolocationRequestParent::Recvprompt()
++{
++  mProxy = new nsGeolocationRequestProxy();
++  NS_ASSERTION(mProxy, "Alloc of request proxy failed");
++  if (NS_FAILED(mProxy->Init(this)))
++    mProxy->Cancel();
++  return true;
++}
 +
-+    GeolocationRequestParent::~GeolocationRequestParent()
-+    {
-+      MOZ_COUNT_DTOR(GeolocationRequestParent);
-+      delete mProxy;
-+    }
-+
-+    bool
-+    GeolocationRequestParent::Recvprompt()
-+    {
-+      mProxy = new nsGeolocationRequestProxy();
-+      NS_ASSERTION(mProxy, "Alloc of request proxy failed");
-+      (void) mProxy->Init(this);
-+      return true;
-+    }
-+
-+  } // namespace dom                                                                                                                                                                                                                   
-+} // namespace mozilla                                                                                                                                                                                                                                                        
++} // namespace dom
++} // namespace mozilla
 diff --git a/dom/src/geolocation/nsGeolocation.h b/dom/src/geolocation/nsGeolocation.h
 --- a/dom/src/geolocation/nsGeolocation.h
 +++ b/dom/src/geolocation/nsGeolocation.h
@@ -912,7 +882,7 @@ diff --git a/dom/src/geolocation/nsGeolocation.h b/dom/src/geolocation/nsGeoloca
    PRPackedBool mHasSentData;
  
    nsCOMPtr<nsITimer> mTimeoutTimer;
-@@ -199,27 +211,31 @@ public:
+@@ -199,16 +211,18 @@ public:
  
    // Check to see if the widnow still exists
    PRBool WindowOwnerStillExists();
@@ -931,14 +901,11 @@ diff --git a/dom/src/geolocation/nsGeolocation.h b/dom/src/geolocation/nsGeoloca
    nsTArray<nsRefPtr<nsGeolocationRequest> > mPendingCallbacks;
    nsTArray<nsRefPtr<nsGeolocationRequest> > mWatchingCallbacks;
  
-   PRBool mUpdateInProgress;
- 
-   // window that this was created for.  Weak reference.
+@@ -218,8 +232,9 @@ private:
    nsWeakPtr mOwner;
  
    // where the content was loaded from
    nsCOMPtr<nsIURI> mURI;
-+  nsCString mURIString;
  
    // owning back pointer.
    nsRefPtr<nsGeolocationService> mService;
@@ -948,7 +915,7 @@ diff --git a/dom/src/geolocation/nsGeolocationOOP.h b/dom/src/geolocation/nsGeol
 new file mode 100644
 --- /dev/null
 +++ b/dom/src/geolocation/nsGeolocationOOP.h
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,87 @@
 +/* ***** BEGIN LICENSE BLOCK *****
 + * Version: MPL 1.1/GPL 2.0/LGPL 2.1
 + *
@@ -970,6 +937,7 @@ new file mode 100644
 + * the Initial Developer. All Rights Reserved.
 + *
 + * Contributor(s):
++ *  Doug Turner <dougt@mozilla.com>  (Original Author)
 + *
 + * Alternatively, the contents of this file may be used under the terms of
 + * either the GNU General Public License Version 2 or later (the "GPL"), or
@@ -985,17 +953,13 @@ new file mode 100644
 + *
 + * ***** END LICENSE BLOCK ***** */
 +
-+#ifndef __nsGeolocationOOP_h__
-+#define __nsGeolocationOOP_h__
++#ifndef nsGeolocationOOP_h
++#define nsGeolocationOOP_h
 +
-+#ifdef MOZ_IPC
 +#include "base/basictypes.h"
-+#endif
 +
 +#include "nsIGeolocationProvider.h"
 +#include "nsString.h"
-+
-+#include "nsIDOMWindow.h"
 +#include "nsIDOMElement.h"
 +
 +#include "mozilla/dom/PGeolocationRequestParent.h"
@@ -1003,45 +967,42 @@ new file mode 100644
 +class nsGeolocationRequestProxy;
 +
 +namespace mozilla {
-+  namespace dom {
++namespace dom {
 +
-+    class GeolocationRequestParent : public PGeolocationRequestParent
-+    {
-+      public:
-+        GeolocationRequestParent(nsIDOMWindow *target, nsIDOMElement *element, const nsCString& principal);
-+        virtual ~GeolocationRequestParent();
++class GeolocationRequestParent : public PGeolocationRequestParent
++{
++ public:
++  GeolocationRequestParent(nsIDOMElement *element, const IPC::URI& principal);
++  virtual ~GeolocationRequestParent();
++  
++  nsCOMPtr<nsIURI>           mURI;
++  nsCOMPtr<nsIDOMElement>    mElement;
++  nsGeolocationRequestProxy *mProxy;
 +
-+        virtual bool Recvprompt();
-+
-+        nsCString mPrincipal;
-+
-+	nsCOMPtr<nsIDOMWindow> mTarget;
-+	nsCOMPtr<nsIDOMElement> mElement;
-+
-+	nsGeolocationRequestProxy *mProxy;
-+    };
-+
-+  } // namespace dom                                                                                                                                                                                                                   
++ private:  
++  virtual bool Recvprompt();
++};
++  
++} // namespace dom                                                                                                                                                                                                                   
 +} // namespace mozilla
 +
-+class nsGeolocationRequestProxy : public nsIGeolocationRequest {
++class nsGeolocationRequestProxy : public nsIGeolocationRequest
++{
 + public:
 +  nsGeolocationRequestProxy();
 +  virtual ~nsGeolocationRequestProxy();
-+
++  
 +  nsresult Init(mozilla::dom::GeolocationRequestParent* parent);
-+
-+
++  
 +  NS_DECL_ISUPPORTS;
 +  NS_DECL_NSIGEOLOCATIONREQUEST;
 +
 + private:
-+  // the GeolocationRequestParent owns this.
++  // Non-owning pointer to the GeolocationRequestParent object which owns this proxy.
 +  mozilla::dom::GeolocationRequestParent* mParent;
 +};
++#endif // nsGeolocationOOP_h
 +
-+
-+#endif // __nsGeolocationOOP_h__
 diff --git a/ipc/ipdl/Makefile.in b/ipc/ipdl/Makefile.in
 --- a/ipc/ipdl/Makefile.in
 +++ b/ipc/ipdl/Makefile.in
