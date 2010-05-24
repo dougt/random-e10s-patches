@@ -1,0 +1,211 @@
+diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
+--- a/dom/ipc/ContentProcessParent.cpp
++++ b/dom/ipc/ContentProcessParent.cpp
+@@ -36,16 +36,17 @@
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ #include "ContentProcessParent.h"
+ 
+ #include "TabParent.h"
+ #include "mozilla/ipc/TestShellParent.h"
+ #include "mozilla/net/NeckoParent.h"
++#include "mozilla/IHistory.h"
+ 
+ #include "nsIObserverService.h"
+ 
+ #include "nsAutoPtr.h"
+ #include "nsCOMPtr.h"
+ #include "nsServiceManagerUtils.h"
+ #include "nsThreadUtils.h"
+ #include "nsChromeRegistryChrome.h"
+@@ -258,16 +259,36 @@ ContentProcessParent::RequestRunToComple
+         printf("Running to completion...\n");
+ #endif
+         mRunToCompletionDepth = 1;
+         mShouldCallUnblockChild = true;
+     }
+     return !!mRunToCompletionDepth;
+ }
+ 
++
++bool
++ContentProcessParent::RecvVisitURI(const IPC::URI& uri,
++                                   const IPC::URI& referrer,
++                                   const PRUint32& flags,
++                                   const PRBool& referrerIsRedirect)
++{
++    nsCOMPtr<nsIURI> ourURI = uri;
++    nsCOMPtr<nsIURI> ourReferrer = referrer;
++
++    nsCOMPtr<IHistory> history = do_GetService("@mozilla.org/browser/history;1"); 
++
++    if (referrerIsRedirect)
++        history->VisitURI(ourURI, nsnull, flags, ourReferrer);
++    else
++        history->VisitURI(ourURI, ourReferrer, flags, nsnull);
++
++    return true;
++}
++
+ /* void onDispatchedEvent (in nsIThreadInternal thread); */
+ NS_IMETHODIMP
+ ContentProcessParent::OnDispatchedEvent(nsIThreadInternal *thread)
+ {
+     if (mOldObserver)
+         return mOldObserver->OnDispatchedEvent(thread);
+ 
+     return NS_OK;
+diff --git a/dom/ipc/ContentProcessParent.h b/dom/ipc/ContentProcessParent.h
+--- a/dom/ipc/ContentProcessParent.h
++++ b/dom/ipc/ContentProcessParent.h
+@@ -42,16 +42,17 @@
+ #include "base/waitable_event_watcher.h"
+ 
+ #include "mozilla/dom/PContentProcessParent.h"
+ #include "mozilla/ipc/GeckoChildProcessHost.h"
+ 
+ #include "nsIObserver.h"
+ #include "nsIThreadInternal.h"
+ #include "mozilla/Monitor.h"
++#include "nsNetUtil.h"
+ 
+ namespace mozilla {
+ 
+ namespace ipc {
+ class TestShellParent;
+ }
+ 
+ namespace dom {
+@@ -106,16 +107,21 @@ private:
+     virtual bool DeallocPIFrameEmbedding(PIFrameEmbeddingParent* frame);
+ 
+     virtual PTestShellParent* AllocPTestShell();
+     virtual bool DeallocPTestShell(PTestShellParent* shell);
+ 
+     virtual PNeckoParent* AllocPNecko();
+     virtual bool DeallocPNecko(PNeckoParent* necko);
+ 
++    virtual bool RecvVisitURI(const IPC::URI& uri,
++                              const IPC::URI& referrer,
++                              const PRUint32& flags,
++                              const PRBool& referrerIsRedirect);
++
+     mozilla::Monitor mMonitor;
+ 
+     GeckoChildProcessHost* mSubprocess;
+ 
+     int mRunToCompletionDepth;
+     bool mShouldCallUnblockChild;
+     nsCOMPtr<nsIThreadObserver> mOldObserver;
+ 
+diff --git a/dom/ipc/PContentProcess.ipdl b/dom/ipc/PContentProcess.ipdl
+--- a/dom/ipc/PContentProcess.ipdl
++++ b/dom/ipc/PContentProcess.ipdl
+@@ -37,17 +37,19 @@
+  * ***** END LICENSE BLOCK ***** */
+ 
+ include protocol PIFrameEmbedding;
+ include protocol PTestShell;
+ include protocol PNecko;
+ 
+ include "mozilla/TabTypes.h";
+ include "mozilla/chrome/RegistryMessageUtils.h";
++include "mozilla/net/NeckoMessageUtils.h";
+ 
++using IPC::URI;
+ using ChromePackage;
+ using ResourceMapping;
+ using OverrideMapping;
+ 
+ namespace mozilla {
+ namespace dom {
+ 
+ rpc protocol PContentProcess
+@@ -63,12 +65,13 @@ child:
+ 
+     RegisterChrome(ChromePackage[] packages, ResourceMapping[] resources,
+                    OverrideMapping[] overrides);
+ 
+     async SetOffline(PRBool offline);
+ 
+ parent:
+     PNecko();
++    async VisitURI(URI uri, URI referrer, PRUint32 flags, PRBool referrerIsRedirect);
+ };
+ 
+ }
+ }
+diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/places/src/History.cpp
+--- a/toolkit/components/places/src/History.cpp
++++ b/toolkit/components/places/src/History.cpp
+@@ -32,16 +32,21 @@
+  * use your version of this file under the terms of the MPL, indicate your
+  * decision by deleting the provisions above and replace them with the notice
+  * and other provisions required by the GPL or the LGPL. If you do not delete
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
++#ifdef MOZ_IPC
++#include "mozilla/dom/ContentProcessChild.h"
++#include "nsXULAppAPI.h"
++#endif
++
+ #include "History.h"
+ #include "nsNavHistory.h"
+ #include "nsNavBookmarks.h"
+ #include "Helpers.h"
+ 
+ #include "mozilla/storage.h"
+ #include "mozilla/dom/Link.h"
+ #include "nsDocShellCID.h"
+@@ -790,16 +795,32 @@ History::StartNextVisitURI()
+ NS_IMETHODIMP
+ History::VisitURI(nsIURI* aURI,
+                   nsIURI* aReferrer,
+                   PRUint32 aFlags,
+                   nsIURI* aRedirectFrom)
+ {
+   NS_PRECONDITION(aURI, "URI should not be NULL.");
+ 
++#ifdef MOZ_IPC
++    if (XRE_GetProcessType() == GeckoProcessType_Content) {
++        mozilla::dom::ContentProcessChild * cpc = 
++            mozilla::dom::ContentProcessChild::GetSingleton();
++        NS_ASSERTION(cpc, "Content Protocol is NULL!");
++        NS_ASSERTION(!(aReferrer && aRedirectFrom), "Both can not be non-null");
++        
++        if (aRedirectFrom)
++          (void) cpc->SendVisitURI(IPC::URI(aURI), IPC::URI(aRedirectFrom), aFlags, true);
++        else
++          (void) cpc->SendVisitURI(IPC::URI(aURI), IPC::URI(aReferrer), aFlags, false);
++
++        return NS_OK;
++    } 
++#endif /* MOZ_IPC */
++
+   nsNavHistory* history = nsNavHistory::GetHistoryService();
+   NS_ENSURE_TRUE(history, NS_ERROR_OUT_OF_MEMORY);
+ 
+   // Silently return if URI is something we shouldn't add to DB.
+   PRBool canAdd;
+   nsresult rv = history->CanAddURI(aURI, &canAdd);
+   NS_ENSURE_SUCCESS(rv, rv);
+   if (!canAdd) {
+diff --git a/toolkit/components/places/src/Makefile.in b/toolkit/components/places/src/Makefile.in
+--- a/toolkit/components/places/src/Makefile.in
++++ b/toolkit/components/places/src/Makefile.in
+@@ -93,9 +93,11 @@ EXTRA_JS_MODULES = \
+   PlacesDBUtils.jsm \
+   utils.js \
+   $(NULL)
+ 
+ EXTRA_PP_JS_MODULES = \
+   PlacesUtils.jsm \
+   $(NULL)
+ 
++include $(topsrcdir)/config/config.mk
++include $(topsrcdir)/ipc/chromium/chromium-config.mk
+ include $(topsrcdir)/config/rules.mk

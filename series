@@ -1,4 +1,8 @@
-bug_564402_fix_for_slot_bustage
+places_patch_stover
+benz_post_check
+uri_serial
+bug_551181_notify_chrome_about_visit_page
+bug_516728_link_visited
 
 # GFX
 bug_545632_16bpp
@@ -14,3 +18,4 @@ bug_545632_16bpp
 # misc
 bug_561457_shutdown_crash_bandaide
 bug_564929_conditional_jump_in_makefullscreen
+# doesn't work yet.... disable_non_native_content_components

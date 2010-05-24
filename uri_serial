@@ -1,0 +1,92 @@
+# HG changeset patch
+# User Josh Matthews <josh@joshmatthews.net>
+# Date 1274247677 14400
+# Node ID be4cf2af3fa303933219795fc68ffd6b2bc97856
+# Parent  1fe91cec43dd9741c05416ed36e7407c723d7374
+[mq]: ipc-uri-slowpath
+
+diff --git a/netwerk/ipc/NeckoMessageUtils.h b/netwerk/ipc/NeckoMessageUtils.h
+--- a/netwerk/ipc/NeckoMessageUtils.h
++++ b/netwerk/ipc/NeckoMessageUtils.h
+@@ -40,16 +40,17 @@
+ #define mozilla_net_NeckoMessageUtils_h
+ 
+ #include "IPC/IPCMessageUtils.h"
+ #include "nsStringGlue.h"
+ #include "nsIURI.h"
+ #include "nsIIPCSerializable.h"
+ #include "nsIClassInfo.h"
+ #include "nsComponentManagerUtils.h"
++#include "nsNetUtil.h"
+ 
+ namespace IPC {
+ 
+ // Since IPDL doesn't have any knowledge of pointers, there's no easy way to
+ // pass around nsIURI pointers.  This is a very thin wrapper that IPDL can
+ // easily work with, allowing for conversion to and from an nsIURI pointer.
+ 
+ class URI {
+@@ -75,17 +76,27 @@ struct ParamTraits<URI>
+   static void Write(Message* aMsg, const paramType& aParam)
+   {
+     bool isNull = !aParam.mURI;
+     WriteParam(aMsg, isNull);
+     if (isNull)
+       return;
+     
+     nsCOMPtr<nsIIPCSerializable> serializable = do_QueryInterface(aParam.mURI);
+-    NS_ABORT_IF_FALSE(serializable, "All IPDL URIs must be serializable");
++    bool isSerialized = !!serializable;
++    WriteParam(aMsg, isSerialized);
++    if (!isSerialized) {
++      nsCString spec, charset;
++      aParam.mURI->GetSpec(spec);
++      aParam.mURI->GetOriginCharset(charset);
++      WriteParam(aMsg, spec);
++      WriteParam(aMsg, charset);
++      return;
++    }
++    
+     nsCOMPtr<nsIClassInfo> classInfo = do_QueryInterface(aParam.mURI);
+     char cidStr[NSID_LENGTH];
+     nsCID cid;
+     nsresult rv = classInfo->GetClassIDNoAlloc(&cid);
+     NS_ABORT_IF_FALSE(NS_SUCCEEDED(rv), "All IPDL URIs must report a valid class ID");
+     
+     cid.ToProvidedString(cidStr);
+     WriteParam(aMsg, nsCAutoString(cidStr));
+@@ -96,16 +107,34 @@ struct ParamTraits<URI>
+   {
+     bool isNull;
+     if (!ReadParam(aMsg, aIter, &isNull))
+       return false;
+     if (isNull) {
+       aResult->mURI = nsnull;
+       return true;
+     }
++
++    bool isSerialized;
++    if (!ReadParam(aMsg, aIter, &isSerialized))
++      return false;
++    if (!isSerialized) {
++      nsCString spec, charset;
++      if (!ReadParam(aMsg, aIter, &spec) ||
++          !ReadParam(aMsg, aIter, &charset))
++        return false;
++      
++      nsCOMPtr<nsIURI> uri;
++      nsresult rv = NS_NewURI(getter_AddRefs(uri), spec, charset.get());
++      if (NS_FAILED(rv))
++        return false;
++      
++      uri.forget(&aResult->mURI);
++      return true;
++    }
+     
+     nsCAutoString cidStr;
+     nsCID cid;
+     if (!ReadParam(aMsg, aIter, &cidStr) ||
+         !cid.Parse(cidStr.get()))
+       return false;
+ 
+     nsCOMPtr<nsIURI> uri = do_CreateInstance(cid);

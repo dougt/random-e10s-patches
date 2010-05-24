@@ -1,0 +1,49 @@
+diff --git a/xpcom/components/nsComponentManager.cpp b/xpcom/components/nsComponentManager.cpp
+--- a/xpcom/components/nsComponentManager.cpp
++++ b/xpcom/components/nsComponentManager.cpp
+@@ -41,16 +41,21 @@
+  * Corporation, 2000
+  *
+  * Modifications to Mozilla code or documentation
+  * identified per MPL Section 3.3
+  *
+  * Date             Modified by     Description of modification
+  * 04/20/2000       IBM Corp.      Added PR_CALLBACK for Optlink use in OS2
+  */
++
++#ifdef MOZ_IPC
++#include "nsXULAppAPI.h"
++#endif
++
+ #include <stdlib.h>
+ #include "nscore.h"
+ #include "nsISupports.h"
+ #include "nspr.h"
+ #include "nsCRT.h" // for atoll
+ // Arena used by component manager for storing contractid string, dll
+ // location strings and small objects
+ // CAUTION: Arena align mask needs to be defined before including plarena.h
+@@ -3045,16 +3050,23 @@ nsComponentManagerImpl::AutoRegisterComp
+     return rv;
+ }
+ 
+ nsresult
+ nsComponentManagerImpl::AutoRegisterComponent(nsILocalFile*  aComponentFile,
+                                    nsTArray<DeferredModule> &aDeferred,
+                                    LoaderType                minLoader)
+ {
++#ifdef MOZ_IPC
++    if (XRE_GetProcessType() == GeckoProcessType_Content) {
++        printf("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! Attempting to auto register non-native components in content process!\n");
++        return NS_OK;
++    }
++#endif
++
+     nsresult rv;
+ 
+     NS_ASSERTION(minLoader < GetLoaderCount(), "Bad minLoader");
+ 
+     nsCAutoString registryLocation;
+     rv = RegistryLocationForFile(aComponentFile, registryLocation);
+     if (NS_FAILED(rv))
+         return rv;

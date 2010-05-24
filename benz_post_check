@@ -1,0 +1,40 @@
+diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
+--- a/docshell/base/nsDocShell.cpp
++++ b/docshell/base/nsDocShell.cpp
+@@ -9009,26 +9009,30 @@ nsDocShell::OnNewURI(nsIURI * aURI, nsIC
+     if (aChannel) {
+         nsCOMPtr<nsIHttpChannel> httpChannel(do_QueryInterface(aChannel));
+         
+         // Check if the HTTPChannel is hiding under a multiPartChannel
+         if (!httpChannel)  {
+             GetHttpChannel(aChannel, getter_AddRefs(httpChannel));
+         }
+ 
++
+         if (httpChannel) {
++            
++            // If this is a POST request, we do not want to include this in global
++            // history.
++            nsCAutoString method;
++            httpChannel->GetRequestMethod(method);
++            if (method.Equals("POST")) 
++                updateHistory = PR_FALSE;
++
+             nsCOMPtr<nsIUploadChannel> uploadChannel(do_QueryInterface(httpChannel));
+-            if (uploadChannel) {
++            if (uploadChannel)
+                 uploadChannel->GetUploadStream(getter_AddRefs(inputStream));
+ 
+-                // If this is a POST request, we do not want to include this in global
+-                // history.
+-                updateHistory = PR_FALSE;
+-            }
+-
+             // If the response status indicates an error, unlink this session
+             // history entry from any entries sharing its doc ident.
+             PRUint32 responseStatus;
+             nsresult rv = httpChannel->GetResponseStatus(&responseStatus);
+             if (mLSHE && NS_SUCCEEDED(rv) && responseStatus >= 400) {
+                 mLSHE->SetUniqueDocIdentifier();
+             }
+         }

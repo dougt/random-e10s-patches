@@ -1,0 +1,407 @@
+diff --git a/dom/ipc/ContentProcessChild.cpp b/dom/ipc/ContentProcessChild.cpp
+--- a/dom/ipc/ContentProcessChild.cpp
++++ b/dom/ipc/ContentProcessChild.cpp
+@@ -39,26 +39,30 @@
+ #include "ContentProcessChild.h"
+ #include "TabChild.h"
+ 
+ #include "mozilla/ipc/TestShellChild.h"
+ #include "mozilla/net/NeckoChild.h"
+ #include "mozilla/ipc/XPCShellEnvironment.h"
+ #include "mozilla/jsipc/PContextWrapperChild.h"
+ 
++#include "History.h"
+ #include "nsXULAppAPI.h"
+ 
++#include "nsDocShellCID.h"
++#include "nsNetUtil.h"
+ #include "base/message_loop.h"
+ #include "base/task.h"
+ 
+ #include "nsChromeRegistryContent.h"
+ #include "mozilla/chrome/RegistryMessageUtils.h"
+ 
+ using namespace mozilla::ipc;
+ using namespace mozilla::net;
++using namespace mozilla::places;
+ 
+ namespace mozilla {
+ namespace dom {
+ 
+ ContentProcessChild* ContentProcessChild::sSingleton;
+ 
+ ContentProcessChild::ContentProcessChild()
+ {
+@@ -156,10 +160,18 @@ void
+ ContentProcessChild::ActorDestroy(ActorDestroyReason why)
+ {
+     if (AbnormalShutdown == why)
+         NS_WARNING("shutting down because of crash!");
+ 
+     XRE_ShutdownChildProcess();
+ }
+ 
++bool
++ContentProcessChild::RecvNotifyVisited(const IPC::URI& aURI)
++{
++    nsCOMPtr<nsIURI> newURI = aURI;
++    History::GetSingleton()->NotifyVisited(newURI);
++    return true;
++}
++
+ } // namespace dom
+ } // namespace mozilla
+diff --git a/dom/ipc/ContentProcessChild.h b/dom/ipc/ContentProcessChild.h
+--- a/dom/ipc/ContentProcessChild.h
++++ b/dom/ipc/ContentProcessChild.h
+@@ -80,16 +80,18 @@ public:
+     virtual bool DeallocPNecko(PNeckoChild*);
+ 
+     virtual bool RecvRegisterChrome(const nsTArray<ChromePackage>& packages,
+                                     const nsTArray<ResourceMapping>& resources,
+                                     const nsTArray<OverrideMapping>& overrides);
+ 
+     virtual bool RecvSetOffline(const PRBool& offline);
+ 
++    virtual bool RecvNotifyVisited(const IPC::URI& aURI);
++
+ private:
+     NS_OVERRIDE
+     virtual void ActorDestroy(ActorDestroyReason why);
+ 
+     static ContentProcessChild* sSingleton;
+ 
+     DISALLOW_EVIL_CONSTRUCTORS(ContentProcessChild);
+ };
+diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
+--- a/dom/ipc/ContentProcessParent.cpp
++++ b/dom/ipc/ContentProcessParent.cpp
+@@ -44,26 +44,30 @@
+ #include "mozilla/IHistory.h"
+ 
+ #include "nsIObserverService.h"
+ 
+ #include "nsAutoPtr.h"
+ #include "nsCOMPtr.h"
+ #include "nsServiceManagerUtils.h"
+ #include "nsThreadUtils.h"
++#include "nsDocShellCID.h"
++#include "nsNetUtil.h"
++#include "History.h"
+ #include "nsChromeRegistryChrome.h"
+ 
+ using namespace mozilla::ipc;
+ using namespace mozilla::net;
+ using mozilla::MonitorAutoEnter;
+ 
+ namespace mozilla {
+ namespace dom {
+ 
+ #define NS_IPC_IOSERVICE_SET_OFFLINE_TOPIC "ipc:network:set-offline"
++#define HISTORY_NOTIFY_VISITED_TOPIC "history-notify-visited"
+ 
+ ContentProcessParent* ContentProcessParent::gSingleton;
+ 
+ ContentProcessParent*
+ ContentProcessParent::GetSingleton(PRBool aForceNew)
+ {
+     if (gSingleton && !gSingleton->IsAlive())
+         gSingleton = nsnull;
+@@ -75,16 +79,20 @@ ContentProcessParent::GetSingleton(PRBoo
+                 do_GetService("@mozilla.org/observer-service;1");
+             if (obs) {
+                 if (NS_SUCCEEDED(obs->AddObserver(parent, "xpcom-shutdown",
+                                                   PR_FALSE))) {
+                     gSingleton = parent;
+                 }
+                 obs->AddObserver(
+                   parent, NS_IPC_IOSERVICE_SET_OFFLINE_TOPIC, PR_FALSE); 
++
++                // listen for History changes
++                obs->AddObserver(
++                  parent, HISTORY_NOTIFY_VISITED_TOPIC, PR_FALSE);
+             }
+             nsCOMPtr<nsIThreadInternal>
+                 threadInt(do_QueryInterface(NS_GetCurrentThread()));
+             if (threadInt) {
+                 threadInt->GetObserver(getter_AddRefs(parent->mOldObserver));
+                 threadInt->SetObserver(parent);
+             }
+         }
+@@ -186,16 +194,22 @@ ContentProcessParent::Observe(nsISupport
+         mSubprocess = nsnull;
+     }
+ 
+     if (!strcmp(aTopic, NS_IPC_IOSERVICE_SET_OFFLINE_TOPIC) && mSubprocess) {
+       NS_ConvertUTF16toUTF8 dataStr(aData);
+       const char *offline = dataStr.get();
+       SendSetOffline(!strcmp(offline, "true") ? true : false);
+     }
++
++    if (!strcmp(aTopic, HISTORY_NOTIFY_VISITED_TOPIC) && mSubprocess) {
++      nsCOMPtr<nsIURI> uri = do_QueryInterface(aSubject);
++      SendNotifyVisited(IPC::URI(uri));
++    }
+     return NS_OK;
+ }
+ 
+ PIFrameEmbeddingParent*
+ ContentProcessParent::AllocPIFrameEmbedding()
+ {
+   TabParent* parent = new TabParent();
+   if (parent){
+@@ -261,16 +275,25 @@ ContentProcessParent::RequestRunToComple
+         mRunToCompletionDepth = 1;
+         mShouldCallUnblockChild = true;
+     }
+     return !!mRunToCompletionDepth;
+ }
+ 
+ 
+ bool
++ContentProcessParent::RecvStartVisitedQuery(const IPC::URI& aURI)
++{
++    nsCOMPtr<nsIURI> newURI = aURI;
++    nsCOMPtr<IHistory> history = do_GetService("@mozilla.org/browser/history;1");
++    history->RegisterVisitedCallback(newURI, nsnull);
++    return true;
++}
++
++bool
+ ContentProcessParent::RecvVisitURI(const IPC::URI& uri,
+                                    const IPC::URI& referrer,
+                                    const PRUint32& flags,
+                                    const PRBool& referrerIsRedirect)
+ {
+     nsCOMPtr<nsIURI> ourURI = uri;
+     nsCOMPtr<nsIURI> ourReferrer = referrer;
+ 
+diff --git a/dom/ipc/ContentProcessParent.h b/dom/ipc/ContentProcessParent.h
+--- a/dom/ipc/ContentProcessParent.h
++++ b/dom/ipc/ContentProcessParent.h
+@@ -112,16 +112,18 @@ private:
+     virtual PNeckoParent* AllocPNecko();
+     virtual bool DeallocPNecko(PNeckoParent* necko);
+ 
+     virtual bool RecvVisitURI(const IPC::URI& uri,
+                               const IPC::URI& referrer,
+                               const PRUint32& flags,
+                               const PRBool& referrerIsRedirect);
+ 
++    virtual bool RecvStartVisitedQuery(const IPC::URI& uri);
++
+     mozilla::Monitor mMonitor;
+ 
+     GeckoChildProcessHost* mSubprocess;
+ 
+     int mRunToCompletionDepth;
+     bool mShouldCallUnblockChild;
+     nsCOMPtr<nsIThreadObserver> mOldObserver;
+ 
+diff --git a/dom/ipc/Makefile.in b/dom/ipc/Makefile.in
+--- a/dom/ipc/Makefile.in
++++ b/dom/ipc/Makefile.in
+@@ -71,16 +71,17 @@ CPPSRCS = \
+   $(NULL)
+ 
+ include $(topsrcdir)/config/config.mk
+ include $(topsrcdir)/ipc/chromium/chromium-config.mk
+ include $(topsrcdir)/config/rules.mk
+ 
+ LOCAL_INCLUDES += \
+ 		-I$(srcdir)/../../content/base/src \
++		-I$(srcdir)/../../toolkit/components/places/src \
+ 		-I$(srcdir)/../../content/events/src \
+ 		-I$(srcdir)/../src/geolocation \
+ 		-I$(topsrcdir)/chrome/src \
+ 		$(NULL)
+ 
+ CXXFLAGS += $(TK_CFLAGS)
+ 
+ DEFINES += -DBIN_SUFFIX='"$(BIN_SUFFIX)"'
+diff --git a/dom/ipc/PContentProcess.ipdl b/dom/ipc/PContentProcess.ipdl
+--- a/dom/ipc/PContentProcess.ipdl
++++ b/dom/ipc/PContentProcess.ipdl
+@@ -63,15 +63,18 @@ child:
+ 
+     PTestShell();
+ 
+     RegisterChrome(ChromePackage[] packages, ResourceMapping[] resources,
+                    OverrideMapping[] overrides);
+ 
+     async SetOffline(PRBool offline);
+ 
++    async NotifyVisited(URI uri);
++
+ parent:
+     PNecko();
+     async VisitURI(URI uri, URI referrer, PRUint32 flags, PRBool referrerIsRedirect);
++    async StartVisitedQuery(URI uri);
+ };
+ 
+ }
+ }
+diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/places/src/History.cpp
+--- a/toolkit/components/places/src/History.cpp
++++ b/toolkit/components/places/src/History.cpp
+@@ -37,16 +37,21 @@
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ #ifdef MOZ_IPC
+ #include "mozilla/dom/ContentProcessChild.h"
+ #include "nsXULAppAPI.h"
+ #endif
+ 
++#ifdef MOZ_IPC
++#include "mozilla/dom/ContentProcessChild.h"
++#include "mozilla/dom/ContentProcessParent.h"
++#endif
++
+ #include "History.h"
+ #include "nsNavHistory.h"
+ #include "nsNavBookmarks.h"
+ #include "Helpers.h"
+ 
+ #include "mozilla/storage.h"
+ #include "mozilla/dom/Link.h"
+ #include "nsDocShellCID.h"
+@@ -59,16 +64,17 @@ namespace mozilla {
+ namespace places {
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+ //// Global Defines
+ 
+ #define URI_VISITED "visited"
+ #define URI_NOT_VISITED "not visited"
+ #define URI_VISITED_RESOLUTION_TOPIC "visited-status-resolution"
++#define HISTORY_NOTIFY_VISITED_TOPIC "history-notify-visited"
+ // Observer event fired after a visit has been registered in the DB.
+ #define URI_VISIT_SAVED "uri-visit-saved"
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+ //// Anonymous Helpers
+ 
+ namespace {
+ 
+@@ -696,16 +702,27 @@ History::~History()
+ #endif
+ }
+ 
+ void
+ History::NotifyVisited(nsIURI* aURI)
+ {
+   NS_ASSERTION(aURI, "Ruh-roh!  A NULL URI was passed to us!");
+ 
++  nsCOMPtr<nsIObserverService> observerService =
++    do_GetService(NS_OBSERVERSERVICE_CONTRACTID);
++
++#ifdef MOZ_IPC
++  if (XRE_GetProcessType() == GeckoProcessType_Default) {
++    (void) observerService->NotifyObservers(aURI,
++                                            HISTORY_NOTIFY_VISITED_TOPIC,
++                                            nsnull);
++  }
++#endif
++
+   // If the hash table has not been initialized, then we have nothing to notify
+   // about.
+   if (!mObservers.IsInitialized()) {
+     return;
+   }
+ 
+   // Additionally, if we have no observers for this URI, we have nothing to
+   // notify about.
+@@ -901,46 +918,54 @@ History::VisitURI(nsIURI* aURI,
+   return NS_OK;
+ }
+ 
+ NS_IMETHODIMP
+ History::RegisterVisitedCallback(nsIURI* aURI,
+                                  Link* aLink)
+ {
+   NS_ASSERTION(aURI, "Must pass a non-null URI!");
+-  NS_ASSERTION(aLink, "Must pass a non-null Link object!");
+ 
+   // First, ensure that our hash table is setup.
+   if (!mObservers.IsInitialized()) {
+     NS_ENSURE_TRUE(mObservers.Init(), NS_ERROR_OUT_OF_MEMORY);
+   }
+ 
+   // Obtain our array of observers for this URI.
+ #ifdef DEBUG
+   bool keyAlreadyExists = !!mObservers.GetEntry(aURI);
+ #endif
+   KeyClass* key = mObservers.PutEntry(aURI);
+   NS_ENSURE_TRUE(key, NS_ERROR_OUT_OF_MEMORY);
+   ObserverArray& observers = key->array;
+ 
+-  if (observers.IsEmpty()) {
+-    NS_ASSERTION(!keyAlreadyExists,
+-                 "An empty key was kept around in our hashtable!");
++  nsresult rv = NS_OK;
++#ifdef MOZ_IPC
++  // If we are a content process, always remote the request to the
++  // parent process.
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    mozilla::dom::ContentProcessChild * cpc = 
++      mozilla::dom::ContentProcessChild::GetSingleton();
++    NS_ASSERTION(cpc, "Content Protocol is NULL!");
++    cpc->SendStartVisitedQuery(IPC::URI(aURI));
++  }
++  else
++#endif
++  rv = VisitedQuery::Start(aURI);
+ 
+-    // We are the first Link node to ask about this URI, or there are no pending
+-    // Links wanting to know about this URI.  Therefore, we should query the
+-    // database now.
+-    nsresult rv = VisitedQuery::Start(aURI);
+-    if (NS_FAILED(rv)) {
+-      // Remove our array from the hashtable so we don't keep it around.
+-      mObservers.RemoveEntry(aURI);
+-      return rv;
+-    }
++  if (NS_FAILED(rv)) {
++    // Remove our array from the hashtable so we don't keep it around.
++    mObservers.RemoveEntry(aURI);
++    return rv;
+   }
+ 
++  // We are done.
++  if (!aLink)
++    return NS_OK;
++
+   // Sanity check that Links are not registered more than once for a given URI.
+   // This will not catch a case where it is registered for two different URIs.
+   NS_ASSERTION(!observers.Contains(aLink),
+                "Already tracking this Link object!");
+ 
+   // Start tracking our Link.
+   if (!observers.AppendElement(aLink)) {
+     // Curses - unregister and return failure.
+diff --git a/toolkit/components/places/src/Makefile.in b/toolkit/components/places/src/Makefile.in
+--- a/toolkit/components/places/src/Makefile.in
++++ b/toolkit/components/places/src/Makefile.in
+@@ -45,16 +45,21 @@ include $(DEPTH)/config/autoconf.mk
+ 
+ MODULE = places
+ LIBRARY_NAME  = places
+ LIBXUL_LIBRARY = 1
+ EXPORT_LIBRARY = 1
+ MODULE_NAME = nsPlacesModule
+ IS_COMPONENT = 1
+ 
++EXPORTS_NAMESPACES = mozilla/places
++
++EXPORTS_mozilla/places = \
++  History.h \
++  $(NULL)
+ 
+ CPPSRCS = \
+           nsAnnoProtocolHandler.cpp \
+           nsAnnotationService.cpp \
+           nsFaviconService.cpp \
+           nsNavHistory.cpp \
+           nsNavHistoryQuery.cpp \
+           nsNavHistoryResult.cpp \
