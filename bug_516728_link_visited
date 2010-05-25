@@ -138,10 +138,11 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
        SendSetOffline(!strcmp(offline, "true") ? true : false);
      }
 +
-+    if (!strcmp(aTopic, HISTORY_NOTIFY_VISITED_TOPIC) && mSubprocess) {
++    else if (!strcmp(aTopic, HISTORY_NOTIFY_VISITED_TOPIC) && mSubprocess) {
 +      nsCOMPtr<nsIURI> uri = do_QueryInterface(aSubject);
 +      SendNotifyVisited(IPC::URI(uri));
 +    }
++
      return NS_OK;
  }
  

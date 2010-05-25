@@ -92,12 +92,12 @@ diff --git a/docshell/base/IHistory.h b/docshell/base/IHistory.h
 diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
 --- a/docshell/base/nsDocShell.cpp
 +++ b/docshell/base/nsDocShell.cpp
-@@ -107,16 +107,17 @@
+@@ -106,16 +106,17 @@
+ #include "nsDOMJSUtils.h"
  #include "nsIInterfaceRequestorUtils.h"
  #include "nsIView.h"
  #include "nsIViewManager.h"
  #include "nsIScriptChannel.h"
- #include "nsIURIClassifier.h"
  #include "nsIOfflineCacheUpdate.h"
  #include "nsCPrefetchService.h"
  #include "nsJSON.h"
@@ -110,7 +110,7 @@ diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
  
  
  // Local Includes
-@@ -667,16 +668,17 @@ static nsISHEntry* GetRootSHEntry(nsISHE
+@@ -666,16 +667,17 @@ static nsISHEntry* GetRootSHEntry(nsISHE
  //*****************************************************************************
  //***    nsDocShell: Object Management
  //*****************************************************************************
@@ -128,14 +128,14 @@ diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
      mAppType(nsIDocShell::APP_TYPE_UNKNOWN),
      mMarginWidth(-1),
      mMarginHeight(-1),
-@@ -5668,42 +5670,77 @@ nsDocShell::OnRedirectStateChange(nsICha
+@@ -5656,42 +5658,74 @@ nsDocShell::OnRedirectStateChange(nsICha
+                                   PRUint32 aRedirectFlags,
+                                   PRUint32 aStateFlags)
+ {
+     NS_ASSERTION(aStateFlags & STATE_REDIRECTING,
+                  "Calling OnRedirectStateChange when there is no redirect");
+     if (!(aStateFlags & STATE_IS_DOCUMENT))
          return; // not a toplevel document
- 
-     // If this load is being checked by the URI classifier, we need to
-     // query the classifier again for the new URI.
-     if (mClassifier) {
-         mClassifier->OnRedirect(aOldChannel, aNewChannel);
-     }
  
 -    nsCOMPtr<nsIGlobalHistory3> history3(do_QueryInterface(mGlobalHistory));
 -    nsresult result = NS_ERROR_NOT_IMPLEMENTED;
@@ -155,6 +155,9 @@ diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
 -        if (! oldURI)
 -            return; // nothing to tell anybody about
 -        AddToGlobalHistory(oldURI, PR_TRUE, aOldChannel);
+-    }
+-
+-    // check if the new load should go through the application cache.
 +    PRUint32 visitURIFlags = 0;
 +    if (IsFrame()) {
 +        visitURIFlags &= mozilla::IHistory::TOP_LEVEL;
@@ -176,19 +179,18 @@ diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
 +    if (NS_FAILED(rv)) {
 +        return;
 +    }
-+
++    
 +    if (mItemType == typeContent &&
 +        !(aRedirectFlags & nsIChannelEventSink::REDIRECT_INTERNAL)) {
-+
++        
 +        // Internal redirects are ignored because they are specific to the
 +        // channel implementation.
 +        mozilla::IHistory* history = nsContentUtils::GetHistory();
 +        if (!(aRedirectFlags & nsIChannelEventSink::REDIRECT_INTERNAL)) {
 +            nsCOMPtr<nsIURI> referrer;
-+            nsresult rv = NS_GetReferrerFromChannel(
-+              aOldChannel,
-+              getter_AddRefs(referrer)
-+            );
++            nsresult rv = NS_GetReferrerFromChannel(aOldChannel,
++                                                    getter_AddRefs(referrer)
++                                                    );
 +            if (NS_SUCCEEDED(rv) && !mRedirectOccurred) {
 +                // The IHistory API maintains chains of visits, tracking both
 +                // HTTP referrers and redirects for a user session.  VisitURI
@@ -206,13 +208,11 @@ diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
 +                (void)history->VisitURI(oldURI, NULL, visitURIFlags, referrer);
 +                mRedirectOccurred = true;
 +            }
-+
++            
 +            (void)history->VisitURI(newURI, NULL, visitURIFlags, oldURI);
 +        }
-+
-     }
- 
-     // check if the new load should go through the application cache.
++    }
++   // check if the new load should go through the application cache.
      nsCOMPtr<nsIApplicationCacheChannel> appCacheChannel =
          do_QueryInterface(aNewChannel);
      if (appCacheChannel) {
@@ -226,7 +226,7 @@ diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
          mLoadType = LOAD_NORMAL_REPLACE;
          SetHistoryEntry(&mLSHE, nsnull);
      }
-@@ -8976,16 +9013,20 @@ nsDocShell::OnNewURI(nsIURI * aURI, nsIC
+@@ -8943,16 +8977,20 @@ nsDocShell::OnNewURI(nsIURI * aURI, nsIC
          if (!httpChannel)  {
              GetHttpChannel(aChannel, getter_AddRefs(httpChannel));
          }
@@ -247,7 +247,7 @@ diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
              nsresult rv = httpChannel->GetResponseStatus(&responseStatus);
              if (mLSHE && NS_SUCCEEDED(rv) && responseStatus >= 400) {
                  mLSHE->SetUniqueDocIdentifier();
-@@ -9056,18 +9097,18 @@ nsDocShell::OnNewURI(nsIURI * aURI, nsIC
+@@ -9023,18 +9061,18 @@ nsDocShell::OnNewURI(nsIURI * aURI, nsIC
          (aLoadType == LOAD_RELOAD_BYPASS_CACHE ||
           aLoadType == LOAD_RELOAD_BYPASS_PROXY ||
           aLoadType == LOAD_RELOAD_BYPASS_PROXY_AND_CACHE)) {
@@ -268,7 +268,7 @@ diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
              mLSHE->SetCacheKey(cacheKey);
          else if (mOSHE)
              mOSHE->SetCacheKey(cacheKey);
-@@ -9081,18 +9122,23 @@ nsDocShell::OnNewURI(nsIURI * aURI, nsIC
+@@ -9048,18 +9086,23 @@ nsDocShell::OnNewURI(nsIURI * aURI, nsIC
               * rootDocShell
               */
              (void) AddToSessionHistory(aURI, aChannel, aOwner,
@@ -294,7 +294,7 @@ diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
      if (rootSH && (mLoadType & LOAD_CMD_HISTORY)) {
          nsCOMPtr<nsISHistoryInternal> shInternal(do_QueryInterface(rootSH));
          if (shInternal) {
-@@ -9401,17 +9447,17 @@ nsDocShell::AddState(nsIVariant *aData, 
+@@ -9368,17 +9411,17 @@ nsDocShell::AddState(nsIVariant *aData, 
      // We need to call FireOnLocationChange so that the browser's address bar
      // gets updated and the back button is enabled, but we only need to
      // explicitly call FireOnLocationChange if we're not calling SetCurrentURI,
@@ -313,7 +313,7 @@ diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
      // Try to set the title of the current history element
      if (mOSHE)
          mOSHE->SetTitle(aTitle);
-@@ -10103,62 +10149,38 @@ NS_IMETHODIMP nsDocShell::MakeEditable(P
+@@ -10070,62 +10113,38 @@ NS_IMETHODIMP nsDocShell::MakeEditable(P
  {
    nsresult rv = EnsureEditorData();
    if (NS_FAILED(rv)) return rv;
@@ -399,7 +399,7 @@ diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
 diff --git a/docshell/base/nsDocShell.h b/docshell/base/nsDocShell.h
 --- a/docshell/base/nsDocShell.h
 +++ b/docshell/base/nsDocShell.h
-@@ -462,21 +462,18 @@ protected:
+@@ -429,21 +429,18 @@ protected:
      // overridden from nsDocLoader, this provides more information than the
      // normal OnStateChange with flags STATE_REDIRECTING
      virtual void OnRedirectStateChange(nsIChannel* aOldChannel,
@@ -423,7 +423,7 @@ diff --git a/docshell/base/nsDocShell.h b/docshell/base/nsDocShell.h
      NS_IMETHOD GetChildOffset(nsIDOMNode * aChild, nsIDOMNode * aParent,
          PRInt32 * aOffset);
      nsIScrollableFrame* GetRootScrollFrame();
-@@ -674,16 +671,20 @@ protected:
+@@ -641,16 +638,20 @@ protected:
      nsCOMPtr<nsICommandManager> mCommandManager;
      // Reference to the SHEntry for this docshell until the page is destroyed.
      // Somebody give me better name
@@ -444,7 +444,7 @@ diff --git a/docshell/base/nsDocShell.h b/docshell/base/nsDocShell.h
      // Editor data, if this document is designMode or contentEditable.
      nsAutoPtr<nsDocShellEditorData> mEditorData;
  
-@@ -731,16 +732,19 @@ protected:
+@@ -695,16 +696,19 @@ protected:
      // Try not to use it, we should get rid of it.
      PRUint32                   mChildOffset;
      PRUint32                   mBusyFlags;
@@ -1451,7 +1451,7 @@ diff --git a/toolkit/components/places/src/History.h b/toolkit/components/places
 diff --git a/toolkit/components/places/src/nsNavHistory.cpp b/toolkit/components/places/src/nsNavHistory.cpp
 --- a/toolkit/components/places/src/nsNavHistory.cpp
 +++ b/toolkit/components/places/src/nsNavHistory.cpp
-@@ -81,21 +81,16 @@
+@@ -83,21 +83,16 @@
  
  #ifdef MOZ_XUL
  #include "nsIAutoCompleteInput.h"
@@ -1473,7 +1473,7 @@ diff --git a/toolkit/components/places/src/nsNavHistory.cpp b/toolkit/components
  #define RECENT_EVENT_QUEUE_MAX_LENGTH 128
  
  // preference ID strings
-@@ -230,31 +225,22 @@ NS_IMPL_CI_INTERFACE_GETTER5(
+@@ -232,31 +227,22 @@ NS_IMPL_CI_INTERFACE_GETTER5(
  , nsIGlobalHistory3
  , nsIGlobalHistory2
  , nsIDownloadHistory
@@ -1505,7 +1505,7 @@ diff --git a/toolkit/components/places/src/nsNavHistory.cpp b/toolkit/components
      bool hasRecentCorruptDB()
      {
        nsCOMPtr<nsIFile> profDir;
-@@ -900,16 +886,37 @@ nsNavHistory::GetDatabaseStatus(PRUint16
+@@ -904,16 +890,37 @@ nsNavHistory::GetDatabaseStatus(PRUint16
   */
  nsresult
  nsNavHistory::UpdateSchemaVersion()
@@ -1543,7 +1543,7 @@ diff --git a/toolkit/components/places/src/nsNavHistory.cpp b/toolkit/components
  public:
    NS_DECL_ISUPPORTS
    NS_DECL_MOZISTORAGEFUNCTION
-@@ -1856,16 +1863,19 @@ nsNavHistory::GetUrlIdFor(nsIURI* aURI, 
+@@ -1860,16 +1867,19 @@ nsNavHistory::GetUrlIdFor(nsIURI* aURI, 
  
  
  // nsNavHistory::InternalAddNewPage
@@ -1563,7 +1563,7 @@ diff --git a/toolkit/components/places/src/nsNavHistory.cpp b/toolkit/components
                                   PRBool aHidden,
                                   PRBool aTyped,
                                   PRInt32 aVisitCount,
-@@ -2153,16 +2163,32 @@ nsNavHistory::GetNewSessionID()
+@@ -2157,16 +2167,32 @@ nsNavHistory::GetNewSessionID()
      mLastSessionID = selectSession->AsInt64(0) + 1;
    else
      mLastSessionID = 1;
@@ -1596,7 +1596,7 @@ diff --git a/toolkit/components/places/src/nsNavHistory.cpp b/toolkit/components
        "SELECT ROUND(( "
          "strftime('%s','now','localtime','utc') - "
          "( "
-@@ -2849,24 +2875,21 @@ nsNavHistory::AddVisit(nsIURI* aURI, PRT
+@@ -2853,24 +2879,21 @@ nsNavHistory::AddVisit(nsIURI* aURI, PRT
    // important to notify the observers below.
    nsNavBookmarks *bs = nsNavBookmarks::GetBookmarksService();
    NS_ENSURE_TRUE(bs, NS_ERROR_OUT_OF_MEMORY);
@@ -1623,7 +1623,7 @@ diff --git a/toolkit/components/places/src/nsNavHistory.cpp b/toolkit/components
    // (since we implement nsIDownloadHistory) this will not happen and we need to
    // send it ourselves.
    if (newItem && (aIsRedirect || aTransitionType == TRANSITION_DOWNLOAD)) {
-@@ -7472,62 +7495,16 @@ nsNavHistory::RemoveDuplicateURIs()
+@@ -7476,62 +7499,16 @@ nsNavHistory::RemoveDuplicateURIs()
    rv = transaction.Commit();
    NS_ENSURE_SUCCESS(rv, rv);
    return NS_OK;

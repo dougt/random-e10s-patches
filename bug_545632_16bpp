@@ -23,7 +23,7 @@ diff --git a/gfx/cairo/cairo/src/cairo-deprecated.h b/gfx/cairo/cairo/src/cairo-
 diff --git a/gfx/cairo/cairo/src/cairo-image-surface.c b/gfx/cairo/cairo/src/cairo-image-surface.c
 --- a/gfx/cairo/cairo/src/cairo-image-surface.c
 +++ b/gfx/cairo/cairo/src/cairo-image-surface.c
-@@ -44,18 +44,20 @@ _cairo_format_from_pixman_format (pixman
+@@ -59,18 +59,20 @@ _cairo_format_from_pixman_format (pixman
      case PIXMAN_a8r8g8b8:
  	return CAIRO_FORMAT_ARGB32;
      case PIXMAN_x8r8g8b8:
@@ -45,7 +45,7 @@ diff --git a/gfx/cairo/cairo/src/cairo-image-surface.c b/gfx/cairo/cairo/src/cai
      case PIXMAN_a4:       case PIXMAN_r1g2b1:   case PIXMAN_b1g2r1:
      case PIXMAN_a1r1g1b1: case PIXMAN_a1b1g1r1: case PIXMAN_c4:
      case PIXMAN_g4:       case PIXMAN_g1:
-@@ -301,16 +303,19 @@ _cairo_format_to_pixman_format_code (cai
+@@ -350,16 +352,19 @@ _cairo_format_to_pixman_format_code (cai
  	ret = PIXMAN_a1;
  	break;
      case CAIRO_FORMAT_A8:
@@ -65,7 +65,7 @@ diff --git a/gfx/cairo/cairo/src/cairo-image-surface.c b/gfx/cairo/cairo/src/cai
      return ret;
  }
  
-@@ -646,16 +651,18 @@ cairo_image_surface_get_stride (cairo_su
+@@ -706,16 +711,18 @@ cairo_image_surface_get_stride (cairo_su
      return image_surface->stride;
  }
  slim_hidden_def (cairo_image_surface_get_stride);
@@ -84,7 +84,7 @@ diff --git a/gfx/cairo/cairo/src/cairo-image-surface.c b/gfx/cairo/cairo/src/cai
  	return CAIRO_FORMAT_ARGB32;
      }
  
-@@ -666,16 +673,18 @@ _cairo_format_from_content (cairo_conten
+@@ -726,16 +733,18 @@ _cairo_format_from_content (cairo_conten
  cairo_content_t
  _cairo_content_from_format (cairo_format_t format)
  {
@@ -103,7 +103,7 @@ diff --git a/gfx/cairo/cairo/src/cairo-image-surface.c b/gfx/cairo/cairo/src/cai
      ASSERT_NOT_REACHED;
      return CAIRO_CONTENT_COLOR_ALPHA;
  }
-@@ -683,16 +692,18 @@ _cairo_content_from_format (cairo_format
+@@ -743,16 +752,18 @@ _cairo_content_from_format (cairo_format
  int
  _cairo_format_bits_per_pixel (cairo_format_t format)
  {
@@ -125,7 +125,7 @@ diff --git a/gfx/cairo/cairo/src/cairo-image-surface.c b/gfx/cairo/cairo/src/cai
 diff --git a/gfx/cairo/cairo/src/cairo.h b/gfx/cairo/cairo/src/cairo.h
 --- a/gfx/cairo/cairo/src/cairo.h
 +++ b/gfx/cairo/cairo/src/cairo.h
-@@ -307,17 +307,18 @@ typedef enum _cairo_status {
+@@ -316,17 +316,18 @@ typedef enum _cairo_status {
   *
   * Note: The large values here are designed to keep #cairo_content_t
   * values distinct from #cairo_format_t values so that the
@@ -145,7 +145,7 @@ diff --git a/gfx/cairo/cairo/src/cairo.h b/gfx/cairo/cairo/src/cairo.h
   * @data: the buffer containing the data to write
   * @length: the amount of data to write
   *
-@@ -2061,21 +2062,18 @@ cairo_surface_has_show_text_glyphs (cair
+@@ -2136,21 +2137,18 @@ cairo_surface_has_show_text_glyphs (cair
   * image data.
   *
   * New entries may be added in future versions.
@@ -172,7 +172,7 @@ diff --git a/gfx/cairo/cairo/src/cairo.h b/gfx/cairo/cairo/src/cairo.h
 diff --git a/gfx/cairo/cairo/src/cairoint.h b/gfx/cairo/cairo/src/cairoint.h
 --- a/gfx/cairo/cairo/src/cairoint.h
 +++ b/gfx/cairo/cairo/src/cairoint.h
-@@ -2146,26 +2146,27 @@ _cairo_surface_has_device_transform (cai
+@@ -2182,26 +2182,27 @@ _cairo_surface_has_device_transform (cai
   *
   * If we do decide to start fully supporting RGB16_565 as an external
   * format, then %CAIRO_FORMAT_VALID needs to be adjusted to include
@@ -204,7 +204,7 @@ diff --git a/gfx/cairo/cairo/src/cairoint.h b/gfx/cairo/cairo/src/cairoint.h
 diff --git a/gfx/thebes/public/gfxASurface.h b/gfx/thebes/public/gfxASurface.h
 --- a/gfx/thebes/public/gfxASurface.h
 +++ b/gfx/thebes/public/gfxASurface.h
-@@ -62,16 +62,17 @@ public:
+@@ -63,16 +63,17 @@ public:
       * The format for an image surface. For all formats with alpha data, 0
       * means transparent, 1 or 255 means fully opaque.
       */
@@ -222,10 +222,10 @@ diff --git a/gfx/thebes/public/gfxASurface.h b/gfx/thebes/public/gfxASurface.h
          SurfaceTypePDF,
          SurfaceTypePS,
          SurfaceTypeXlib,
-@@ -88,17 +89,18 @@ public:
-         SurfaceTypeScript,
+@@ -90,17 +91,19 @@ public:
          SurfaceTypeQPainter,
-         SurfaceTypeDDraw
+         SurfaceTypeDDraw,
+         SurfaceTypeMax
      } gfxSurfaceType;
  
      typedef enum {
@@ -234,6 +234,7 @@ diff --git a/gfx/thebes/public/gfxASurface.h b/gfx/thebes/public/gfxASurface.h
 -        CONTENT_COLOR_ALPHA = 0x3000
 +        CONTENT_COLOR_ALPHA = 0x3000,
 +        CONTENT_COLOR16     = 0x4000
++
      } gfxContentType;
  
      /* Wrap the given cairo surface and return a gfxASurface for it */
@@ -245,7 +246,7 @@ diff --git a/gfx/thebes/public/gfxASurface.h b/gfx/thebes/public/gfxASurface.h
 diff --git a/gfx/thebes/src/gfxASurface.cpp b/gfx/thebes/src/gfxASurface.cpp
 --- a/gfx/thebes/src/gfxASurface.cpp
 +++ b/gfx/thebes/src/gfxASurface.cpp
-@@ -384,16 +384,18 @@ gfxASurface::EndPage()
+@@ -387,16 +387,18 @@ gfxASurface::EndPage()
  gfxASurface::gfxContentType
  gfxASurface::ContentFromFormat(gfxImageFormat format)
  {
@@ -267,7 +268,7 @@ diff --git a/gfx/thebes/src/gfxASurface.cpp b/gfx/thebes/src/gfxASurface.cpp
 diff --git a/gfx/thebes/src/gfxImageSurface.cpp b/gfx/thebes/src/gfxImageSurface.cpp
 --- a/gfx/thebes/src/gfxImageSurface.cpp
 +++ b/gfx/thebes/src/gfxImageSurface.cpp
-@@ -117,16 +117,18 @@ long
+@@ -141,16 +141,18 @@ long
  gfxImageSurface::ComputeStride() const
  {
      long stride;
