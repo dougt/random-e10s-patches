@@ -1,7 +1,7 @@
 diff --git a/dom/ipc/ContentProcessChild.cpp b/dom/ipc/ContentProcessChild.cpp
 --- a/dom/ipc/ContentProcessChild.cpp
 +++ b/dom/ipc/ContentProcessChild.cpp
-@@ -39,26 +39,30 @@
+@@ -40,26 +40,30 @@
  #include "ContentProcessChild.h"
  #include "TabChild.h"
  
@@ -32,13 +32,13 @@ diff --git a/dom/ipc/ContentProcessChild.cpp b/dom/ipc/ContentProcessChild.cpp
  
  ContentProcessChild::ContentProcessChild()
  {
-@@ -156,10 +160,18 @@ void
- ContentProcessChild::ActorDestroy(ActorDestroyReason why)
- {
-     if (AbnormalShutdown == why)
-         NS_WARNING("shutting down because of crash!");
- 
-     XRE_ShutdownChildProcess();
+@@ -214,10 +218,18 @@ ContentProcessChild::RecvNotifyRemotePre
+                 continue;
+             }
+         }
+         ++i;
+     }
+     return true;
  }
  
 +bool
@@ -54,7 +54,7 @@ diff --git a/dom/ipc/ContentProcessChild.cpp b/dom/ipc/ContentProcessChild.cpp
 diff --git a/dom/ipc/ContentProcessChild.h b/dom/ipc/ContentProcessChild.h
 --- a/dom/ipc/ContentProcessChild.h
 +++ b/dom/ipc/ContentProcessChild.h
-@@ -80,16 +80,18 @@ public:
+@@ -144,16 +144,18 @@ public:
      virtual bool DeallocPNecko(PNeckoChild*);
  
      virtual bool RecvRegisterChrome(const nsTArray<ChromePackage>& packages,
@@ -65,20 +65,20 @@ diff --git a/dom/ipc/ContentProcessChild.h b/dom/ipc/ContentProcessChild.h
  
 +    virtual bool RecvNotifyVisited(const IPC::URI& aURI);
 +
- private:
-     NS_OVERRIDE
-     virtual void ActorDestroy(ActorDestroyReason why);
- 
-     static ContentProcessChild* sSingleton;
- 
-     DISALLOW_EVIL_CONSTRUCTORS(ContentProcessChild);
- };
+     nsresult AddRemotePrefObserver(const nsCString &aDomain, 
+                                    const nsCString &aPrefRoot, 
+                                    nsIObserver *aObserver, PRBool aHoldWeak);
+     nsresult RemoveRemotePrefObserver(const nsCString &aDomain, 
+                                       const nsCString &aPrefRoot, 
+                                       nsIObserver *aObserver);
+     inline void ClearPrefObservers() {
+         mPrefObserverArray.Clear();
 diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
 --- a/dom/ipc/ContentProcessParent.cpp
 +++ b/dom/ipc/ContentProcessParent.cpp
-@@ -44,26 +44,30 @@
- #include "mozilla/IHistory.h"
- 
+@@ -46,26 +46,30 @@
+ #include "nsIPrefBranch.h"
+ #include "nsIPrefBranch2.h"
  #include "nsIObserverService.h"
  
  #include "nsAutoPtr.h"
@@ -107,19 +107,20 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
  {
      if (gSingleton && !gSingleton->IsAlive())
          gSingleton = nsnull;
-@@ -75,16 +79,20 @@ ContentProcessParent::GetSingleton(PRBoo
-                 do_GetService("@mozilla.org/observer-service;1");
-             if (obs) {
-                 if (NS_SUCCEEDED(obs->AddObserver(parent, "xpcom-shutdown",
-                                                   PR_FALSE))) {
-                     gSingleton = parent;
+@@ -82,16 +86,21 @@ ContentProcessParent::GetSingleton(PRBoo
+                     nsCOMPtr<nsIPrefBranch2> prefs 
+                         (do_GetService(NS_PREFSERVICE_CONTRACTID));
+                     if (prefs) {  
+                         prefs->AddObserver("", parent, PR_FALSE);
+                     }
                  }
                  obs->AddObserver(
                    parent, NS_IPC_IOSERVICE_SET_OFFLINE_TOPIC, PR_FALSE); 
 +
 +                // listen for History changes
 +                obs->AddObserver(
-+                  parent, HISTORY_NOTIFY_VISITED_TOPIC, PR_FALSE);
++                 parent, HISTORY_NOTIFY_VISITED_TOPIC, PR_FALSE);
++                
              }
              nsCOMPtr<nsIThreadInternal>
                  threadInt(do_QueryInterface(NS_GetCurrentThread()));
@@ -128,8 +129,8 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
                  threadInt->SetObserver(parent);
              }
          }
-@@ -186,16 +194,22 @@ ContentProcessParent::Observe(nsISupport
-         mSubprocess = nsnull;
+@@ -285,16 +294,22 @@ ContentProcessParent::Observe(nsISupport
+         SendNotifyRemotePrefObserver(strData);
      }
  
      if (!strcmp(aTopic, NS_IPC_IOSERVICE_SET_OFFLINE_TOPIC) && mSubprocess) {
@@ -151,7 +152,7 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
  {
    TabParent* parent = new TabParent();
    if (parent){
-@@ -261,16 +275,25 @@ ContentProcessParent::RequestRunToComple
+@@ -360,16 +375,25 @@ ContentProcessParent::RequestRunToComple
          mRunToCompletionDepth = 1;
          mShouldCallUnblockChild = true;
      }
@@ -180,15 +181,15 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
 diff --git a/dom/ipc/ContentProcessParent.h b/dom/ipc/ContentProcessParent.h
 --- a/dom/ipc/ContentProcessParent.h
 +++ b/dom/ipc/ContentProcessParent.h
-@@ -112,16 +112,18 @@ private:
-     virtual PNeckoParent* AllocPNecko();
-     virtual bool DeallocPNecko(PNeckoParent* necko);
+@@ -133,16 +133,18 @@ private:
+ 
+     void EnsurePrefService();
  
      virtual bool RecvVisitURI(const IPC::URI& uri,
                                const IPC::URI& referrer,
                                const PRUint32& flags,
                                const PRBool& referrerIsRedirect);
- 
+     
 +    virtual bool RecvStartVisitedQuery(const IPC::URI& uri);
 +
      mozilla::Monitor mMonitor;
@@ -223,7 +224,7 @@ diff --git a/dom/ipc/Makefile.in b/dom/ipc/Makefile.in
 diff --git a/dom/ipc/PContentProcess.ipdl b/dom/ipc/PContentProcess.ipdl
 --- a/dom/ipc/PContentProcess.ipdl
 +++ b/dom/ipc/PContentProcess.ipdl
-@@ -63,15 +63,18 @@ child:
+@@ -63,22 +63,25 @@ child:
  
      PTestShell();
  
@@ -234,14 +235,21 @@ diff --git a/dom/ipc/PContentProcess.ipdl b/dom/ipc/PContentProcess.ipdl
  
 +    async NotifyVisited(URI uri);
 +
+     NotifyRemotePrefObserver(nsCString aDomain);
+ 
  parent:
      PNecko();
+ 
      async VisitURI(URI uri, URI referrer, PRUint32 flags, PRBool referrerIsRedirect);
 +    async StartVisitedQuery(URI uri);
- };
  
- }
- }
+     // prefs-related messages ...
+     sync GetPrefType(nsCString prefName) returns (PRInt32 retValue, nsresult rv);
+     sync GetBoolPref(nsCString prefName) returns (PRBool retValue, nsresult rv);
+     sync GetIntPref(nsCString prefName)  returns (PRInt32 retValue, nsresult rv);
+     sync GetCharPref(nsCString prefName) returns (nsCString retValue, nsresult rv);
+     sync PrefHasUserValue(nsCString prefName) returns (PRBool retValue, nsresult rv);
+     sync PrefIsLocked(nsCString prefName) returns (PRBool retValue, nsresult rv);
 diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/places/src/History.cpp
 --- a/toolkit/components/places/src/History.cpp
 +++ b/toolkit/components/places/src/History.cpp

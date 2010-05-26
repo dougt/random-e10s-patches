@@ -1,7 +1,7 @@
 diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
 --- a/dom/ipc/ContentProcessParent.cpp
 +++ b/dom/ipc/ContentProcessParent.cpp
-@@ -36,16 +36,17 @@
+@@ -37,16 +37,17 @@
   *
   * ***** END LICENSE BLOCK ***** */
  
@@ -11,15 +11,15 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
  #include "mozilla/ipc/TestShellParent.h"
  #include "mozilla/net/NeckoParent.h"
 +#include "mozilla/IHistory.h"
- 
+ #include "nsIPrefBranch.h"
+ #include "nsIPrefBranch2.h"
  #include "nsIObserverService.h"
  
  #include "nsAutoPtr.h"
  #include "nsCOMPtr.h"
  #include "nsServiceManagerUtils.h"
  #include "nsThreadUtils.h"
- #include "nsChromeRegistryChrome.h"
-@@ -258,16 +259,36 @@ ContentProcessParent::RequestRunToComple
+@@ -357,16 +358,36 @@ ContentProcessParent::RequestRunToComple
          printf("Running to completion...\n");
  #endif
          mRunToCompletionDepth = 1;
@@ -69,6 +69,7 @@ diff --git a/dom/ipc/ContentProcessParent.h b/dom/ipc/ContentProcessParent.h
  #include "nsIThreadInternal.h"
  #include "mozilla/Monitor.h"
 +#include "nsNetUtil.h"
+ #include "nsIPrefService.h"
  
  namespace mozilla {
  
@@ -76,21 +77,20 @@ diff --git a/dom/ipc/ContentProcessParent.h b/dom/ipc/ContentProcessParent.h
  class TestShellParent;
  }
  
- namespace dom {
-@@ -106,16 +107,21 @@ private:
-     virtual bool DeallocPIFrameEmbedding(PIFrameEmbeddingParent* frame);
+@@ -127,16 +128,21 @@ private:
+     virtual bool RecvPrefHasUserValue(const nsCString& prefName,
+             PRBool* retValue, nsresult* rv);
  
-     virtual PTestShellParent* AllocPTestShell();
-     virtual bool DeallocPTestShell(PTestShellParent* shell);
+     virtual bool RecvPrefIsLocked(const nsCString& prefName,
+             PRBool* retValue, nsresult* rv);
  
-     virtual PNeckoParent* AllocPNecko();
-     virtual bool DeallocPNecko(PNeckoParent* necko);
+     void EnsurePrefService();
  
 +    virtual bool RecvVisitURI(const IPC::URI& uri,
 +                              const IPC::URI& referrer,
 +                              const PRUint32& flags,
 +                              const PRBool& referrerIsRedirect);
-+
++    
      mozilla::Monitor mMonitor;
  
      GeckoChildProcessHost* mSubprocess;
@@ -122,20 +122,25 @@ diff --git a/dom/ipc/PContentProcess.ipdl b/dom/ipc/PContentProcess.ipdl
  namespace dom {
  
  rpc protocol PContentProcess
-@@ -63,12 +65,13 @@ child:
- 
-     RegisterChrome(ChromePackage[] packages, ResourceMapping[] resources,
-                    OverrideMapping[] overrides);
+@@ -66,16 +68,18 @@ child:
  
      async SetOffline(PRBool offline);
  
+     NotifyRemotePrefObserver(nsCString aDomain);
+ 
  parent:
      PNecko();
-+    async VisitURI(URI uri, URI referrer, PRUint32 flags, PRBool referrerIsRedirect);
- };
  
- }
- }
++    async VisitURI(URI uri, URI referrer, PRUint32 flags, PRBool referrerIsRedirect);
++
+     // prefs-related messages ...
+     sync GetPrefType(nsCString prefName) returns (PRInt32 retValue, nsresult rv);
+     sync GetBoolPref(nsCString prefName) returns (PRBool retValue, nsresult rv);
+     sync GetIntPref(nsCString prefName)  returns (PRInt32 retValue, nsresult rv);
+     sync GetCharPref(nsCString prefName) returns (nsCString retValue, nsresult rv);
+     sync PrefHasUserValue(nsCString prefName) returns (PRBool retValue, nsresult rv);
+     sync PrefIsLocked(nsCString prefName) returns (PRBool retValue, nsresult rv);
+ };
 diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/places/src/History.cpp
 --- a/toolkit/components/places/src/History.cpp
 +++ b/toolkit/components/places/src/History.cpp

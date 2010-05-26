@@ -6,16 +6,12 @@ bug_516728_link_visited
 
 # GFX
 bug_545632_16bpp
-#bug_545632_16bpp_qt
-#bug_xxxxxx_gfx_image_16bpp_enabler
+bug_545632_16bpp_qt
+bug_xxxxxx_gfx_image_16bpp_enabler
 
 # necko
 # bug_536289_ftp
 
-# preferences
-# bustage - bug_506269_preferences
-
 # misc
 bug_561457_shutdown_crash_bandaide
 bug_564929_conditional_jump_in_makefullscreen
-# doesn't work yet.... disable_non_native_content_components
