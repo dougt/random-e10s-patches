@@ -1,0 +1,22 @@
+diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
+--- a/docshell/base/nsDocShell.cpp
++++ b/docshell/base/nsDocShell.cpp
+@@ -10185,17 +10185,17 @@ nsDocShell::AddURIVisit(nsIURI* aURI,
+         //    site N+1 (you are here)
+         //
+         // N=>N+1 was handled by a redirect that just happened a moment ago.
+         // See case 1 or 2. There is nothing to do.
+     }
+     else if (mGlobalHistory) {
+         // Falls back to sync global history interface.
+         (void)mGlobalHistory->AddURI(aURI,
+-                                     (PRBool) aRedirectFromURI,
++                                     !! aRedirectFromURI,
+                                      !IsFrame(),
+                                      aReferrerURI);
+     }
+ 
+     return NS_OK;
+ }
+ 
+ //*****************************************************************************

@@ -1,0 +1,72 @@
+diff --git a/layout/generic/nsGfxScrollFrame.cpp b/layout/generic/nsGfxScrollFrame.cpp
+--- a/layout/generic/nsGfxScrollFrame.cpp
++++ b/layout/generic/nsGfxScrollFrame.cpp
+@@ -77,16 +77,20 @@
+ #include "nsIAccessibilityService.h"
+ #endif
+ #include "nsDisplayList.h"
+ #include "nsBidiUtils.h"
+ #include "nsFrameManager.h"
+ #include "nsIPrefService.h"
+ #include "mozilla/dom/Element.h"
+ 
++#ifdef MOZ_IPC
++#include "nsXULAppAPI.h"
++#endif
++
+ using namespace mozilla::dom;
+ 
+ //----------------------------------------------------------------------
+ 
+ //----------nsHTMLScrollFrame-------------------------------------------
+ 
+ nsIFrame*
+ NS_NewHTMLScrollFrame(nsIPresShell* aPresShell, nsStyleContext* aContext, PRBool aIsRoot)
+@@ -3323,16 +3327,23 @@ static nsIURI* GetDocURI(nsIFrame* aFram
+   return doc->GetDocumentURI();
+ }
+ 
+ void
+ nsGfxScrollFrameInner::SaveVScrollbarStateToGlobalHistory()
+ {
+   NS_ASSERTION(mIsRoot, "Only use this on viewports");
+ 
++#ifdef MOZ_IPC
++  // If we are in a child process, calculating the scrollbar is
++  // probably as fast as asking our parent
++  if (XRE_GetProcessType() == GeckoProcessType_Content)
++    return;
++#endif
++
+   // If the hint is the same as the one we loaded, don't bother
+   // saving it
+   if (mDidLoadHistoryVScrollbarHint &&
+       (mHistoryVScrollbarHint == mHasVerticalScrollbar))
+     return;
+ 
+   nsIURI* uri = GetDocURI(mOuter);
+   if (!uri)
+@@ -3352,16 +3363,23 @@ nsGfxScrollFrameInner::SaveVScrollbarSta
+ 
+ nsresult
+ nsGfxScrollFrameInner::GetVScrollbarHintFromGlobalHistory(PRBool* aVScrollbarNeeded)
+ {
+   NS_ASSERTION(mIsRoot, "Only use this on viewports");
+   NS_ASSERTION(!mDidLoadHistoryVScrollbarHint,
+                "Should only load a hint once, it can be expensive");
+ 
++#ifdef MOZ_IPC
++  // If we are in a child process, calculating the scrollbar is
++  // probably as fast as asking our parent
++  if (XRE_GetProcessType() == GeckoProcessType_Content)
++    return NS_ERROR_NOT_AVAILABLE;
++#endif
++
+   nsIURI* uri = GetDocURI(mOuter);
+   if (!uri)
+     return NS_ERROR_FAILURE;
+ 
+   nsCOMPtr<nsIGlobalHistory3> history(do_GetService(NS_GLOBALHISTORY2_CONTRACTID));
+   if (!history)
+     return NS_ERROR_FAILURE;
+   

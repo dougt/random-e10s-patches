@@ -1,25 +1,26 @@
 diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
 --- a/dom/ipc/ContentProcessParent.cpp
 +++ b/dom/ipc/ContentProcessParent.cpp
-@@ -37,16 +37,17 @@
-  *
-  * ***** END LICENSE BLOCK ***** */
- 
- #include "ContentProcessParent.h"
+@@ -41,17 +41,17 @@
  
  #include "TabParent.h"
  #include "mozilla/ipc/TestShellParent.h"
  #include "mozilla/net/NeckoParent.h"
-+#include "mozilla/IHistory.h"
  #include "nsIPrefBranch.h"
  #include "nsIPrefBranch2.h"
+ #include "nsIPrefLocalizedString.h"
  #include "nsIObserverService.h"
- 
+-
++#include "nsContentUtils.h"
  #include "nsAutoPtr.h"
  #include "nsCOMPtr.h"
  #include "nsServiceManagerUtils.h"
  #include "nsThreadUtils.h"
-@@ -357,16 +358,36 @@ ContentProcessParent::RequestRunToComple
+ #include "nsChromeRegistryChrome.h"
+ 
+ using namespace mozilla::ipc;
+ using namespace mozilla::net;
+@@ -373,16 +373,29 @@ ContentProcessParent::RequestRunToComple
          printf("Running to completion...\n");
  #endif
          mRunToCompletionDepth = 1;
@@ -32,19 +33,12 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
 +bool
 +ContentProcessParent::RecvVisitURI(const IPC::URI& uri,
 +                                   const IPC::URI& referrer,
-+                                   const PRUint32& flags,
-+                                   const PRBool& referrerIsRedirect)
++                                   const PRUint32& flags)
 +{
 +    nsCOMPtr<nsIURI> ourURI = uri;
 +    nsCOMPtr<nsIURI> ourReferrer = referrer;
-+
-+    nsCOMPtr<IHistory> history = do_GetService("@mozilla.org/browser/history;1"); 
-+
-+    if (referrerIsRedirect)
-+        history->VisitURI(ourURI, nsnull, flags, ourReferrer);
-+    else
-+        history->VisitURI(ourURI, ourReferrer, flags, nsnull);
-+
++    IHistory *history = nsContentUtils::GetHistory(); 
++    history->VisitURI(ourURI, referrer, flags);
 +    return true;
 +}
 +
@@ -77,7 +71,7 @@ diff --git a/dom/ipc/ContentProcessParent.h b/dom/ipc/ContentProcessParent.h
  class TestShellParent;
  }
  
-@@ -127,16 +128,21 @@ private:
+@@ -130,16 +131,20 @@ private:
      virtual bool RecvPrefHasUserValue(const nsCString& prefName,
              PRBool* retValue, nsresult* rv);
  
@@ -88,8 +82,7 @@ diff --git a/dom/ipc/ContentProcessParent.h b/dom/ipc/ContentProcessParent.h
  
 +    virtual bool RecvVisitURI(const IPC::URI& uri,
 +                              const IPC::URI& referrer,
-+                              const PRUint32& flags,
-+                              const PRBool& referrerIsRedirect);
++                              const PRUint32& flags);
 +    
      mozilla::Monitor mMonitor;
  
@@ -131,16 +124,16 @@ diff --git a/dom/ipc/PContentProcess.ipdl b/dom/ipc/PContentProcess.ipdl
  parent:
      PNecko();
  
-+    async VisitURI(URI uri, URI referrer, PRUint32 flags, PRBool referrerIsRedirect);
++    async VisitURI(URI uri, URI referrer, PRUint32 flags);
 +
      // prefs-related messages ...
      sync GetPrefType(nsCString prefName) returns (PRInt32 retValue, nsresult rv);
      sync GetBoolPref(nsCString prefName) returns (PRBool retValue, nsresult rv);
      sync GetIntPref(nsCString prefName)  returns (PRInt32 retValue, nsresult rv);
      sync GetCharPref(nsCString prefName) returns (nsCString retValue, nsresult rv);
+     sync GetPrefLocalizedString(nsCString prefName) returns (nsString retValue, nsresult rv);
      sync PrefHasUserValue(nsCString prefName) returns (PRBool retValue, nsresult rv);
      sync PrefIsLocked(nsCString prefName) returns (PRBool retValue, nsresult rv);
- };
 diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/places/src/History.cpp
 --- a/toolkit/components/places/src/History.cpp
 +++ b/toolkit/components/places/src/History.cpp
@@ -166,29 +159,23 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
  #include "mozilla/storage.h"
  #include "mozilla/dom/Link.h"
  #include "nsDocShellCID.h"
-@@ -790,16 +795,32 @@ History::StartNextVisitURI()
+@@ -789,16 +794,26 @@ History::StartNextVisitURI()
+ 
  NS_IMETHODIMP
  History::VisitURI(nsIURI* aURI,
-                   nsIURI* aReferrer,
-                   PRUint32 aFlags,
-                   nsIURI* aRedirectFrom)
+                   nsIURI* aLastVisitedURI,
+                   PRUint32 aFlags)
  {
    NS_PRECONDITION(aURI, "URI should not be NULL.");
  
 +#ifdef MOZ_IPC
-+    if (XRE_GetProcessType() == GeckoProcessType_Content) {
-+        mozilla::dom::ContentProcessChild * cpc = 
-+            mozilla::dom::ContentProcessChild::GetSingleton();
-+        NS_ASSERTION(cpc, "Content Protocol is NULL!");
-+        NS_ASSERTION(!(aReferrer && aRedirectFrom), "Both can not be non-null");
-+        
-+        if (aRedirectFrom)
-+          (void) cpc->SendVisitURI(IPC::URI(aURI), IPC::URI(aRedirectFrom), aFlags, true);
-+        else
-+          (void) cpc->SendVisitURI(IPC::URI(aURI), IPC::URI(aReferrer), aFlags, false);
-+
-+        return NS_OK;
-+    } 
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    mozilla::dom::ContentProcessChild * cpc = 
++      mozilla::dom::ContentProcessChild::GetSingleton();
++    NS_ASSERTION(cpc, "Content Protocol is NULL!");
++    (void) cpc->SendVisitURI(IPC::URI(aURI), IPC::URI(aLastVisitedURI), aFlags);
++    return NS_OK;
++  } 
 +#endif /* MOZ_IPC */
 +
    nsNavHistory* history = nsNavHistory::GetHistoryService();
