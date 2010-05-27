@@ -1,0 +1,576 @@
+--- a/docshell/base/IHistory.h	
++++ a/docshell/base/IHistory.h	
+@@ -123,24 +123,37 @@ public:
+      * @param aFlags
+      *        The VisitFlags describing this visit.
+      */
+     NS_IMETHOD VisitURI(
+         nsIURI *aURI,
+         nsIURI *aLastVisitedURI,
+         PRUint32 aFlags
+     ) = 0;
++
++    /**
++     * Set the title of the URI.
++     *
++     * @pre aURI must be null.
++     *
++     * @param aURI
++     *        Set the title for this URI.
++     * @param aTitle
++     *        The title string.
++     */
++    NS_IMETHOD SetURITitle(nsIURI* aURI, const nsString& aTitle) = 0;
+ };
+ 
+ NS_DEFINE_STATIC_IID_ACCESSOR(IHistory, IHISTORY_IID)
+ 
+ #define NS_DECL_IHISTORY \
+     NS_IMETHOD RegisterVisitedCallback(nsIURI *aURI, \
+                                        mozilla::dom::Link *aContent); \
+     NS_IMETHOD UnregisterVisitedCallback(nsIURI *aURI, \
+                                          mozilla::dom::Link *aContent); \
+     NS_IMETHOD VisitURI(nsIURI *aURI, \
+                         nsIURI *aLastVisitedURI, \
+-                        PRUint32 aFlags);
++                        PRUint32 aFlags); \
++    NS_IMETHOD SetURITitle(nsIURI* aURI, const nsString& aTitle);
+ 
+ } // namespace mozilla
+ 
+ #endif // mozilla_IHistory_h_
+--- a/docshell/base/nsDocShell.cpp	
++++ a/docshell/base/nsDocShell.cpp	
+@@ -4688,20 +4688,25 @@ nsDocShell::SetTitle(const PRUnichar * a
+     // tree owner.
+     if (!parent) {
+         nsCOMPtr<nsIBaseWindow>
+             treeOwnerAsWin(do_QueryInterface(mTreeOwner));
+         if (treeOwnerAsWin)
+             treeOwnerAsWin->SetTitle(aTitle);
+     }
+ 
+-    if (mGlobalHistory && mCurrentURI && mLoadType != LOAD_ERROR_PAGE) {
+-        mGlobalHistory->SetPageTitle(mCurrentURI, nsString(mTitle));
+-    }
+-
++    if (mCurrentURI && mLoadType != LOAD_ERROR_PAGE) {
++        IHistory* history = nsContentUtils::GetHistory();
++        if (history) {
++            history->SetURITitle(mCurrentURI, nsString(mTitle));
++        }
++        else if (mGlobalHistory) {
++            mGlobalHistory->SetPageTitle(mCurrentURI, nsString(mTitle));
++        }
++    }
+ 
+     // Update SessionHistory with the document's title.
+     if (mOSHE && mLoadType != LOAD_BYPASS_HISTORY &&
+         mLoadType != LOAD_ERROR_PAGE) {
+ 
+         mOSHE->SetTitle(mTitle);    
+     }
+ 
+--- a/toolkit/components/places/src/History.cpp	
++++ a/toolkit/components/places/src/History.cpp	
+@@ -691,16 +691,159 @@ public:
+ protected:
+   nsAutoPtr<VisitURIData> mData;
+ };
+ NS_IMPL_ISUPPORTS1(
+   StartVisitURIStep
+ , Step
+ )
+ 
++////////////////////////////////////////////////////////////////////////////////
++//// Steps for SetURITitle
++
++struct SetTitleData : public FailSafeFinishTask
++{
++  nsCOMPtr<nsIURI> uri;
++  nsString title;
++};
++
++/**
++ * Step 3: Notify that title has been updated.
++ */
++class TitleNotifyStep: public Step
++{
++public:
++  NS_DECL_ISUPPORTS
++
++  TitleNotifyStep(nsAutoPtr<SetTitleData> aData) : mData(aData)
++  {
++  }
++
++  NS_IMETHOD Callback(mozIStorageResultSet* aResultSet)
++  {
++    nsNavHistory* history = nsNavHistory::GetHistoryService();
++    history->FireTitleChange(mData->uri, mData->title);
++
++    return NS_OK;
++  }
++
++protected:
++  nsAutoPtr<SetTitleData> mData;
++};
++NS_IMPL_ISUPPORTS1(
++  TitleNotifyStep
++, mozIStorageStatementCallback
++)
++
++/**
++ * Step 2: Set title.
++ */
++class SetTitleStep : public Step
++{
++public:
++  NS_DECL_ISUPPORTS
++
++  SetTitleStep(nsAutoPtr<SetTitleData> aData) : mData(aData)
++  {
++  }
++
++  NS_IMETHOD Callback(mozIStorageResultSet* aResultSet)
++  {
++    NS_ENSURE_STATE(aResultSet);
++
++    nsCOMPtr<mozIStorageRow> row;
++    nsresult rv = aResultSet->GetNextRow(getter_AddRefs(row));
++    NS_ENSURE_SUCCESS(rv, rv);
++
++    nsString title;
++    rv = row->GetString(2, title);
++    NS_ENSURE_SUCCESS(rv, rv);
++
++    // It is actually common to set the title to be the same thing it used to
++    // be. For example, going to any web page will always cause a title to be set,
++    // even though it will often be unchanged since the last visit. In these
++    // cases, we can avoid DB writing and observer overhead.
++    if (mData->title.Equals(title) || (mData->title.IsVoid() && title.IsVoid()))
++      return NS_OK;
++
++    nsNavHistory* history = nsNavHistory::GetHistoryService();
++
++    nsCOMPtr<mozIStorageStatement> stmt =
++      history->GetStatementById(DB_SET_PLACE_TITLE);
++    NS_ENSURE_STATE(stmt);
++
++    if (mData->title.IsVoid()) {
++      rv = stmt->BindNullByName(NS_LITERAL_CSTRING("page_title"));
++    }
++    else {
++      rv = stmt->BindStringByName(
++        NS_LITERAL_CSTRING("page_title"),
++        StringHead(mData->title, TITLE_LENGTH_MAX)
++      );
++    }
++    NS_ENSURE_SUCCESS(rv, rv);
++
++    rv = URIBinder::Bind(stmt, NS_LITERAL_CSTRING("page_url"), mData->uri);
++    NS_ENSURE_SUCCESS(rv, rv);
++
++    nsCOMPtr<Step> step = new TitleNotifyStep(mData);
++    rv = step->ExecuteAsync(stmt);
++    NS_ENSURE_SUCCESS(rv, rv);
++
++    return NS_OK;
++  }
++
++protected:
++  nsAutoPtr<SetTitleData> mData;
++};
++NS_IMPL_ISUPPORTS1(
++  SetTitleStep
++, mozIStorageStatementCallback
++)
++
++/**
++ * Step 1: See if there is an existing URI.
++ */
++class StartSetURITitleStep : public Step
++{
++public:
++  NS_DECL_ISUPPORTS
++
++  StartSetURITitleStep(nsAutoPtr<SetTitleData> aData)
++  : mData(aData)
++  {
++  }
++
++  NS_IMETHOD Callback(mozIStorageResultSet* aResultSet)
++  {
++    nsNavHistory* history = nsNavHistory::GetHistoryService();
++
++    // Find existing entry in moz_places table, if any.
++    nsCOMPtr<mozIStorageStatement> stmt =
++      history->GetStatementById(DB_GET_URL_PAGE_INFO);
++    NS_ENSURE_STATE(stmt);
++
++    nsresult rv = URIBinder::Bind(stmt, NS_LITERAL_CSTRING("page_url"), mData->uri);
++    NS_ENSURE_SUCCESS(rv, rv);
++
++    nsCOMPtr<Step> step = new SetTitleStep(mData);
++    rv = step->ExecuteAsync(stmt);
++    NS_ENSURE_SUCCESS(rv, rv);
++
++    return NS_OK;
++  }
++
++protected:
++  nsAutoPtr<SetTitleData> mData;
++};
++NS_IMPL_ISUPPORTS1(
++  StartSetURITitleStep
++, Step
++)
++
+ } // anonymous namespace
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+ //// History
+ 
+ History* History::gService = NULL;
+ 
+ History::History()
+@@ -975,16 +1118,46 @@ History::UnregisterVisitedCallback(nsIUR
+   // If the array is now empty, we should remove it from the hashtable.
+   if (observers.IsEmpty()) {
+     mObservers.RemoveEntry(aURI);
+   }
+ 
+   return NS_OK;
+ }
+ 
++NS_IMETHODIMP
++History::SetURITitle(nsIURI* aURI, const nsString& aTitle)
++{
++  NS_PRECONDITION(aURI, "Must pass a non-null URI!");
++
++  nsNavHistory* history = nsNavHistory::GetHistoryService();
++  PRBool canAdd;
++  nsresult rv = history->CanAddURI(aURI, &canAdd);
++  NS_ENSURE_SUCCESS(rv, rv);
++  if (!canAdd) {
++    return NS_OK;
++  }
++
++  nsAutoPtr<SetTitleData> data(new SetTitleData());
++  data->uri = aURI;
++
++  if (aTitle.IsEmpty()) {
++    data->title.SetIsVoid(PR_TRUE);
++  }
++  else {
++    data->title.Assign(aTitle);
++  }
++
++  nsCOMPtr<Step> task(new StartSetURITitleStep(data));
++  AppendTask(task);
++
++  return NS_OK;
++}
++ 
++ 
+ ////////////////////////////////////////////////////////////////////////////////
+ //// nsISupports
+ 
+ NS_IMPL_ISUPPORTS1(
+   History
+ , IHistory
+ )
+ 
+--- a/toolkit/components/places/src/History.h	
++++ a/toolkit/components/places/src/History.h	
+@@ -35,20 +35,20 @@ 
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ #ifndef mozilla_places_History_h_
+ #define mozilla_places_History_h_
+ 
++#include "nsString.h"
+ #include "mozilla/IHistory.h"
+ #include "mozilla/dom/Link.h"
+ #include "nsTHashtable.h"
+-#include "nsString.h"
+ #include "nsURIHashKey.h"
+ #include "nsTArray.h"
+ #include "nsDeque.h"
+ 
+ namespace mozilla {
+ namespace places {
+ 
+ #define NS_HISTORYSERVICE_CID \
+--- a/toolkit/components/places/src/nsNavHistory.cpp	
++++ a/toolkit/components/places/src/nsNavHistory.cpp	
+@@ -2182,16 +2182,24 @@ nsNavHistory::FireOnVisit(nsIURI* aURI,
+ {
+   PRUint32 added = 0;
+   NOTIFY_OBSERVERS(mCanNotify, mCacheObservers, mObservers,
+                    nsINavHistoryObserver,
+                    OnVisit(aURI, aVisitID, aTime, aSessionID,
+                            referringVisitID, aTransitionType, &added));
+ }
+ 
++void
++nsNavHistory::FireTitleChange(nsIURI* aURI, const nsString& aTitle)
++{
++  // observers (have to check first if it's bookmarked)
++  NOTIFY_OBSERVERS(mCanNotify, mCacheObservers, mObservers,
++                   nsINavHistoryObserver, OnTitleChanged(aURI, aTitle));
++}
++
+ 
+ PRInt32
+ nsNavHistory::GetDaysOfHistory() {
+   PRInt32 daysOfHistory = 0;
+   nsCOMPtr<mozIStorageStatement> statement;
+   nsresult rv = mDBConn->CreateStatement(NS_LITERAL_CSTRING(
+       "SELECT ROUND(( "
+         "strftime('%s','now','localtime','utc') - "
+--- a/toolkit/components/places/src/nsNavHistory.h	
++++ a/toolkit/components/places/src/nsNavHistory.h	
+@@ -112,16 +112,18 @@ namespace places {
+     DB_GET_PAGE_INFO_BY_URL = 0
+   , DB_GET_TAGS = 1
+   , DB_IS_PAGE_VISITED = 2
+   , DB_INSERT_VISIT = 3
+   , DB_RECENT_VISIT_OF_URL = 4
+   , DB_GET_PAGE_VISIT_STATS = 5
+   , DB_UPDATE_PAGE_VISIT_STATS = 6
+   , DB_ADD_NEW_PAGE = 7
++  , DB_GET_URL_PAGE_INFO = 8
++  , DB_SET_PLACE_TITLE = 9
+   };
+ 
+ } // namespace places
+ } // namespace mozilla
+ 
+ 
+ class mozIAnnotationService;
+ class nsNavHistory;
+@@ -429,32 +431,41 @@ public:
+       case DB_RECENT_VISIT_OF_URL:
+         return mDBRecentVisitOfURL;
+       case DB_GET_PAGE_VISIT_STATS:
+         return mDBGetPageVisitStats;
+       case DB_UPDATE_PAGE_VISIT_STATS:
+         return mDBUpdatePageVisitStats;
+       case DB_ADD_NEW_PAGE:
+         return mDBAddNewPage;
++      case DB_GET_URL_PAGE_INFO:
++        return mDBGetURLPageInfo;
++      case DB_SET_PLACE_TITLE:
++        return mDBSetPlaceTitle;
+     }
+     return nsnull;
+   }
+ 
+   PRInt64 GetNewSessionID();
+ 
+   /**
+    * Fires onVisit event to nsINavHistoryService observers
+    */
+   void FireOnVisit(nsIURI* aURI,
+                    PRInt64 aVisitID,
+                    PRTime aTime,
+                    PRInt64 aSessionID,
+                    PRInt64 referringVisitID,
+                    PRInt32 aTransitionType);
+ 
++  /**
++   * Fires onTitleChanged event to nsINavHistoryService observers
++   */
++  void FireTitleChange(nsIURI* aURI, const nsString& title);
++
+ private:
+   ~nsNavHistory();
+ 
+   // used by GetHistoryService
+   static nsNavHistory *gHistoryService;
+ 
+ protected:
+ 
+--- a/toolkit/components/places/tests/browser/Makefile.in	
++++ a/toolkit/components/places/tests/browser/Makefile.in	
+@@ -43,30 +43,33 @@ VPATH		= @srcdir@
+ relativesrcdir  = toolkit/components/places/tests/browser
+ 
+ include $(DEPTH)/config/autoconf.mk
+ include $(topsrcdir)/config/rules.mk
+ 
+ _BROWSER_FILES = \
+ 	browser_bug399606.js \
+ 	browser_visituri.js \
++	browser_settitle.js \
+ 	$(NULL)
+ 
+ # These are files that need to be loaded via the HTTP proxy server
+ # Access them through http://example.com/
+ _HTTP_FILES = \
+ 	bug_399606/399606-httprefresh.html \
+ 	bug_399606/399606-location.reload.html \
+ 	bug_399606/399606-location.replace.html \
+ 	bug_399606/399606-window.location.href.html \
+ 	bug_399606/399606-window.location.html \
+ 	bug_399606/399606-history.go-0.html \
+ 	visituri/begin.html \
+ 	visituri/redirect_twice.sjs \
+ 	visituri/redirect_once.sjs \
+ 	visituri/final.html \
++	settitle/title1.html \
++	settitle/title2.html \
+ 	$(NULL)
+ 
+ libs:: $(_BROWSER_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/browser/$(relativesrcdir)
+ 
+ libs:: $(_HTTP_FILES)
+ 	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/tests/$(relativesrcdir)
+--- a/toolkit/components/places/tests/browser/browser_settitle.js	
++++ a/toolkit/components/places/tests/browser/browser_settitle.js	
+@@ -0,0 +1,109 @@ 
++/**
++ * Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/
++ */
++
++Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
++
++/**
++ * One-time observer callback.
++ */
++function waitForObserve(name, callback) {
++  var observerService = Cc["@mozilla.org/observer-service;1"]
++                        .getService(Ci.nsIObserverService);
++  var observer = {
++    QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
++    observe: function(subject, topic, data) {
++      observerService.removeObserver(observer, name);
++      observer = null;
++      callback(subject, topic, data);
++    }
++  };
++
++  observerService.addObserver(observer, name, false);
++}
++
++/**
++ * One-time DOMContentLoaded callback.
++ */
++function waitForLoad(callback) {
++  gBrowser.addEventListener("DOMContentLoaded", function() {
++    gBrowser.removeEventListener("DOMContentLoaded", arguments.callee, true);
++    callback();
++  }, true);
++}
++
++var conn = PlacesUtils.history.QueryInterface(Ci.nsPIPlacesDatabase).DBConnection;
++
++/**
++ * Gets a single column value from either the places or historyvisits table.
++ */
++function getColumn(table, column, fromColumnName, fromColumnValue) {
++  var stmt = conn.createStatement(
++    "SELECT " + column + " FROM " + table + "_temp WHERE " + fromColumnName + "=:val " +
++    "UNION ALL " +
++    "SELECT " + column + " FROM " + table + " WHERE " + fromColumnName + "=:val " +
++    "LIMIT 1");
++  try {
++    stmt.params.val = fromColumnValue;
++    stmt.executeStep();
++    return stmt.row[column];
++  }
++  finally {
++    stmt.reset();
++  }
++}
++
++function test() {
++  // Make sure places visit chains are saved correctly with a redirect
++  // transitions.
++
++  waitForExplicitFinish();
++
++  var hs = Cc["@mozilla.org/browser/nav-history-service;1"].
++           getService(Ci.nsINavHistoryService);
++
++  // Create and add history observer.
++  var historyObserver = {
++    data: [],
++    onBeginUpdateBatch: function() {},
++    onEndUpdateBatch: function() {},
++    onVisit: function(aURI, aVisitID, aTime, aSessionID, aReferringID,
++                      aTransitionType) {
++    },
++    onTitleChanged: function(aURI, aPageTitle) {
++      this.data.push({ uri: aURI, title: aPageTitle });
++      ok(this.data.length <= 1, "Too many title changes!");
++      if (this.data.length == 1)
++        confirmResults(this.data);
++    },
++    onBeforeDeleteURI: function(aURI) {},
++    onDeleteURI: function(aURI) {},
++    onClearHistory: function() {},
++    onPageChanged: function(aURI, aWhat, aValue) {},
++    onDeleteVisits: function() {},
++    QueryInterface: XPCOMUtils.generateQI([Ci.nsINavHistoryObserver])
++  };
++  hs.addObserver(historyObserver, false);
++
++  // Load begin page, click link on page to record visits.
++  content.location.href = "http://example.com/tests/toolkit/components/places/tests/browser/title1.html";
++  waitForLoad(function() {
++    content.location.href = "http://example.com/tests/toolkit/components/places/tests/browser/title2.html";
++    waitForLoad(function() {
++      content.location.href = "about:blank";
++    });
++  });
++
++  function confirmResults(data) {
++    is(data[0].uri.spec, "http://example.com/tests/toolkit/components/places/tests/browser/title2.html");
++    is(data[0].title, "Some title");
++
++    data.forEach(function(item) {
++      var title = getColumn("moz_places", "title", "url", data[0].uri.spec);
++      is(title, item.title);
++    });
++
++    finish();
++  }
++}
+--- a/toolkit/components/places/tests/browser/settitle/title1.html	
++++ a/toolkit/components/places/tests/browser/settitle/title1.html	
+@@ -0,0 +1,12 @@ 
++<!--
++ Any copyright is dedicated to the Public Domain.
++ http://creativecommons.org/publicdomain/zero/1.0/
++-->
++
++<html>
++  <head>
++  </head>
++  <body>
++    title1.html
++  </body>
++</html>
+--- a/toolkit/components/places/tests/browser/settitle/title2.html	
++++ a/toolkit/components/places/tests/browser/settitle/title2.html	
+@@ -0,0 +1,14 @@ 
++<!--
++ Any copyright is dedicated to the Public Domain.
++ http://creativecommons.org/publicdomain/zero/1.0/
++-->
++
++<html>
++  <head>
++    <title>Some title</title>
++  </head>
++  <body>
++    title2.html
++  </body>
++</html>
++

@@ -295,12 +295,12 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
  #define URI_VISIT_SAVED "uri-visit-saved"
  
  ////////////////////////////////////////////////////////////////////////////////
- //// Anonymous Helpers
+ //// Step
  
- namespace {
- 
-@@ -696,16 +702,27 @@ History::~History()
- #endif
+ class Step : public AsyncStatementCallback
+ {
+@@ -891,16 +897,27 @@ History::CurrentTaskFinished()
+   StartNextTask();
  }
  
  void
@@ -327,7 +327,7 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
  
    // Additionally, if we have no observers for this URI, we have nothing to
    // notify about.
-@@ -891,46 +908,54 @@ History::VisitURI(nsIURI* aURI,
+@@ -1061,46 +1078,54 @@ History::VisitURI(nsIURI* aURI,
    return NS_OK;
  }
  

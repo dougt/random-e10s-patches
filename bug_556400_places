@@ -1,13 +1,5 @@
-# HG changeset patch
-# User Benjamin Stover <bstover@mozilla.com>
-# Date 1274910158 25200
-# Node ID 8321f4ba2602bc6c1222d82849d7162f40eb96a6
-# Parent  b0e031d5b5c90ec54a67df2d4bb01fd5b791252f
-[mq]: places
-
-diff --git a/docshell/base/IHistory.h b/docshell/base/IHistory.h
---- a/docshell/base/IHistory.h
-+++ b/docshell/base/IHistory.h
+--- a/docshell/base/IHistory.h	
++++ a/docshell/base/IHistory.h	
 @@ -46,17 +46,17 @@ class nsIURI;
  
  namespace mozilla {
@@ -85,10 +77,9 @@ diff --git a/docshell/base/IHistory.h b/docshell/base/IHistory.h
  } // namespace mozilla
  
  #endif // mozilla_IHistory_h_
-diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
---- a/docshell/base/nsDocShell.cpp
-+++ b/docshell/base/nsDocShell.cpp
-@@ -106,16 +106,17 @@
+--- a/docshell/base/nsDocShell.cpp	
++++ a/docshell/base/nsDocShell.cpp	
+@@ -106,16 +106,17 @@ 
  #include "nsDOMJSUtils.h"
  #include "nsIInterfaceRequestorUtils.h"
  #include "nsIView.h"
@@ -446,7 +437,7 @@ diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
 +    else if (mGlobalHistory) {
 +        // Falls back to sync global history interface.
 +        (void)mGlobalHistory->AddURI(aURI,
-+                                     (PRBool) aRedirectFromURI,
++                                     !!aRedirectFromURI,
 +                                     !IsFrame(),
 +                                     aReferrerURI);
 +    }
@@ -460,9 +451,8 @@ diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
  
  NS_IMETHODIMP
  nsDocShell::SetLoadType(PRUint32 aLoadType)
-diff --git a/docshell/base/nsDocShell.h b/docshell/base/nsDocShell.h
---- a/docshell/base/nsDocShell.h
-+++ b/docshell/base/nsDocShell.h
+--- a/docshell/base/nsDocShell.h	
++++ a/docshell/base/nsDocShell.h	
 @@ -428,22 +428,38 @@ protected:
  
      // overridden from nsDocLoader, this provides more information than the
@@ -549,9 +539,8 @@ diff --git a/docshell/base/nsDocShell.h b/docshell/base/nsDocShell.h
      PRInt32                    mLoadedTransIndex;
  
      PRPackedBool               mAllowSubframes;
-diff --git a/toolkit/components/places/src/Helpers.cpp b/toolkit/components/places/src/Helpers.cpp
---- a/toolkit/components/places/src/Helpers.cpp
-+++ b/toolkit/components/places/src/Helpers.cpp
+--- a/toolkit/components/places/src/Helpers.cpp	
++++ a/toolkit/components/places/src/Helpers.cpp	
 @@ -55,17 +55,17 @@ AsyncStatementCallback::HandleError(mozI
    nsresult rv = aError->GetResult(&result);
    NS_ENSURE_SUCCESS(rv, rv);
@@ -610,9 +599,8 @@ diff --git a/toolkit/components/places/src/Helpers.cpp b/toolkit/components/plac
  
  } // namespace places
  } // namespace mozilla
-diff --git a/toolkit/components/places/src/Helpers.h b/toolkit/components/places/src/Helpers.h
---- a/toolkit/components/places/src/Helpers.h
-+++ b/toolkit/components/places/src/Helpers.h
+--- a/toolkit/components/places/src/Helpers.h	
++++ a/toolkit/components/places/src/Helpers.h	
 @@ -131,13 +131,51 @@ public:
                         const nsACString& aName,
                         nsIURI* aURI);
@@ -665,10 +653,9 @@ diff --git a/toolkit/components/places/src/Helpers.h b/toolkit/components/places
  } // namespace mozilla
  
  #endif // mozilla_places_Helpers_h_
-diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/places/src/History.cpp
---- a/toolkit/components/places/src/History.cpp
-+++ b/toolkit/components/places/src/History.cpp
-@@ -34,16 +34,17 @@
+--- a/toolkit/components/places/src/History.cpp	
++++ a/toolkit/components/places/src/History.cpp	
+@@ -34,16 +34,17 @@ 
   * and other provisions required by the GPL or the LGPL. If you do not delete
   * the provisions above, a recipient may use your version of this file under
   * the terms of any one of the MPL, the GPL or the LGPL.
@@ -686,7 +673,7 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
  #include "nsIEventStateManager.h"
  #include "mozilla/Services.h"
  
-@@ -53,30 +54,135 @@ namespace mozilla {
+@@ -53,30 +54,111 @@ namespace mozilla {
  namespace places {
  
  ////////////////////////////////////////////////////////////////////////////////
@@ -697,37 +684,13 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
  #define URI_VISITED_RESOLUTION_TOPIC "visited-status-resolution"
 +// Observer event fired after a visit has been registered in the DB.
 +#define URI_VISIT_SAVED "uri-visit-saved"
- 
- ////////////////////////////////////////////////////////////////////////////////
- //// Anonymous Helpers
- 
- namespace {
- 
++
 +////////////////////////////////////////////////////////////////////////////////
 +//// Step
-+
-+struct VisitURIData
-+{
-+  PRInt64 placeId;
-+  PRInt32 hidden;
-+  PRInt32 typed;
-+  nsCOMPtr<nsIURI> uri;
-+
-+  // Url of last added visit in chain.
-+  nsCString lastSpec;
-+  PRInt64 lastVisitId;
-+  PRInt32 transitionType;
-+  PRInt64 sessionId;
-+  PRTime dateTime;
-+};
 +
 +class Step : public AsyncStatementCallback
 +{
 +public:
-+  NS_DECL_ISUPPORTS
-+
-+  virtual ~Step() {}
-+
 +  /**
 +   * Executes statement asynchronously using this as a callback.
 +   * 
@@ -770,11 +733,6 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
 +  nsCOMPtr<mozIStorageResultSet> mResultSet;
 +};
 +
-+NS_IMPL_ISUPPORTS1(
-+  Step,
-+  mozIStorageStatementCallback
-+)
-+
 +NS_IMETHODIMP
 +Step::ExecuteAsync(mozIStorageStatement* aStmt)
 +{
@@ -805,7 +763,12 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
 +  Callback(resultSet);
 +  return NS_OK;
 +}
-+
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+ //// Anonymous Helpers
+ 
+ namespace {
+ 
  class VisitedQuery : public mozIStorageStatementCallback
  {
  public:
@@ -823,7 +786,7 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
  
      // Bind by index for performance.
      nsresult rv = URIBinder::Bind(stmt, 0, aURI);
-@@ -139,32 +245,449 @@ private:
+@@ -139,41 +221,534 @@ private:
    nsCOMPtr<nsIURI> mURI;
    bool mIsVisited;
  };
@@ -832,18 +795,46 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
    mozIStorageStatementCallback
  )
  
++/**
++ * Fail-safe mechanism for ensuring that your task completes, no matter what.
++ * Pass this around as an nsAutoPtr in your steps to guarantee that when all
++ * your steps are finished, your task is finished.
++ */
++class FailSafeFinishTask
++{
++public:
++  ~FailSafeFinishTask() {
++    History::GetService()->CurrentTaskFinished();
++  }
++};
++
 +////////////////////////////////////////////////////////////////////////////////
 +//// Steps for VisitURI
 +
++struct VisitURIData : public FailSafeFinishTask
++{
++  PRInt64 placeId;
++  PRInt32 hidden;
++  PRInt32 typed;
++  nsCOMPtr<nsIURI> uri;
++
++  // Url of last added visit in chain.
++  nsCString lastSpec;
++  PRInt64 lastVisitId;
++  PRInt32 transitionType;
++  PRInt64 sessionId;
++  PRTime dateTime;
++};
++
 +/**
-+ * STEP 5: Update frecency of URI and notify observers.
++ * Step 6: Update frecency of URI and notify observers.
 + */
 +class UpdateFrecencyAndNotifyStep :  public Step
 +{
 +public:
-+  NS_DECL_ISUPPORTS_INHERITED
++  NS_DECL_ISUPPORTS
 +
-+  UpdateFrecencyAndNotifyStep(VisitURIData* aData)
++  UpdateFrecencyAndNotifyStep(nsAutoPtr<VisitURIData> aData)
 +  : mData(aData)
 +  {
 +  }
@@ -900,22 +891,22 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
 +  }
 +
 +protected:
-+  VisitURIData* mData;
++  nsAutoPtr<VisitURIData> mData;
 +};
-+NS_IMPL_ISUPPORTS_INHERITED0(
++NS_IMPL_ISUPPORTS1(
 +  UpdateFrecencyAndNotifyStep
-+, Step
++, mozIStorageStatementCallback
 +)
 +
 +/**
-+ * STEP 4: Get newly created visit ID from moz_history_visits table.
++ * Step 5: Get newly created visit ID from moz_history_visits table.
 + */
 +class GetVisitIDStep : public Step
 +{
 +public:
-+  NS_DECL_ISUPPORTS_INHERITED
++  NS_DECL_ISUPPORTS
 +
-+  GetVisitIDStep(VisitURIData* aData)
++  GetVisitIDStep(nsAutoPtr<VisitURIData> aData)
 +  : mData(aData)
 +  {
 +  }
@@ -940,22 +931,22 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
 +  }
 +
 +protected:
-+  VisitURIData* mData;
++  nsAutoPtr<VisitURIData> mData;
 +};
-+NS_IMPL_ISUPPORTS_INHERITED0(
++NS_IMPL_ISUPPORTS1(
 +  GetVisitIDStep
-+, Step
++, mozIStorageStatementCallback
 +)
 +
 +/**
-+ * STEP 3: Add visit to moz_history_visits table.
++ * Step 4: Add visit to moz_history_visits table.
 + */
 +class AddVisitStep : public Step
 +{
 +public:
-+  NS_DECL_ISUPPORTS_INHERITED
++  NS_DECL_ISUPPORTS
 +
-+  AddVisitStep(VisitURIData* aData)
++  AddVisitStep(nsAutoPtr<VisitURIData> aData)
 +  : mData(aData)
 +  {
 +  }
@@ -1029,23 +1020,23 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
 +  }
 +
 +protected:
-+  VisitURIData* mData;
++  nsAutoPtr<VisitURIData> mData;
 +};
-+NS_IMPL_ISUPPORTS_INHERITED0(
++NS_IMPL_ISUPPORTS1(
 +  AddVisitStep
-+, Step
++, mozIStorageStatementCallback
 +)
 +
 +/**
-+ * STEP 2: Callback for inserting or updating a moz_places entry.
++ * Step 3: Callback for inserting or updating a moz_places entry.
 + *         This step checks database for the last visit in session.
 + */
 +class CheckLastVisitStep : public Step
 +{
 +public:
-+  NS_DECL_ISUPPORTS_INHERITED
++  NS_DECL_ISUPPORTS
 +
-+  CheckLastVisitStep(VisitURIData* aData)
++  CheckLastVisitStep(nsAutoPtr<VisitURIData> aData)
 +  : mData(aData)
 +  {
 +  }
@@ -1092,23 +1083,23 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
 +  }
 +
 +protected:
-+  VisitURIData* mData;
++  nsAutoPtr<VisitURIData> mData;
 +};
-+NS_IMPL_ISUPPORTS_INHERITED0(
++NS_IMPL_ISUPPORTS1(
 +  CheckLastVisitStep
-+, Step
++, mozIStorageStatementCallback
 +)
 +
 +/**
-+ * Step 1a: Called only when a new entry is put into moz_places.
++ * Step 2a: Called only when a new entry is put into moz_places.
 + *          Finds the ID of a recently inserted place.
 + */
 +class FindNewIdStep : public Step
 +{
 +public:
-+  NS_DECL_ISUPPORTS_INHERITED
++  NS_DECL_ISUPPORTS
 +
-+  FindNewIdStep(VisitURIData* aData)
++  FindNewIdStep(nsAutoPtr<VisitURIData> aData)
 +  : mData(aData)
 +  {
 +  }
@@ -1132,23 +1123,23 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
 +  }
 +
 +protected:
-+  VisitURIData* mData;
++  nsAutoPtr<VisitURIData> mData;
 +};
-+NS_IMPL_ISUPPORTS_INHERITED0(
++NS_IMPL_ISUPPORTS1(
 +  FindNewIdStep
-+, Step
++, mozIStorageStatementCallback
 +)
 +
 +/**
-+ * Step 1: Callback for checking for an existing URI in moz_places.
++ * Step 2: Callback for checking for an existing URI in moz_places.
 + *         This step inserts or updates the URI accordingly.
 + */
 +class CheckExistingStep : public Step
 +{
 +public:
-+  NS_DECL_ISUPPORTS_INHERITED
++  NS_DECL_ISUPPORTS
 +
-+  CheckExistingStep(VisitURIData* aData)
++  CheckExistingStep(nsAutoPtr<VisitURIData> aData)
 +  : mData(aData)
 +  {
 +  }
@@ -1227,10 +1218,50 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
 +  }
 +
 +protected:
-+  VisitURIData* mData;
++  nsAutoPtr<VisitURIData> mData;
 +};
-+NS_IMPL_ISUPPORTS_INHERITED0(
++NS_IMPL_ISUPPORTS1(
 +  CheckExistingStep
++, mozIStorageStatementCallback
++)
++
++/**
++ * Step 1: See if there is an existing URI.
++ */
++class StartVisitURIStep : public Step
++{
++public:
++  NS_DECL_ISUPPORTS
++
++  StartVisitURIStep(nsAutoPtr<VisitURIData> aData)
++  : mData(aData)
++  {
++  }
++
++  NS_IMETHOD Callback(mozIStorageResultSet* aResultSet)
++  {
++    nsNavHistory* history = nsNavHistory::GetHistoryService();
++
++    // Find existing entry in moz_places table, if any.
++    nsCOMPtr<mozIStorageStatement> stmt =
++      history->GetStatementById(DB_GET_PAGE_VISIT_STATS);
++    NS_ENSURE_STATE(stmt);
++
++    nsresult rv = URIBinder::Bind(stmt, NS_LITERAL_CSTRING("page_url"), mData->uri);
++    NS_ENSURE_SUCCESS(rv, rv);
++
++    nsCOMPtr<Step> step = new CheckExistingStep(mData);
++    rv = step->ExecuteAsync(stmt);
++    NS_ENSURE_SUCCESS(rv, rv);
++
++    return NS_OK;
++  }
++
++protected:
++  nsAutoPtr<VisitURIData> mData;
++};
++NS_IMPL_ISUPPORTS1(
++  StartVisitURIStep
 +, Step
 +)
 +
@@ -1245,26 +1276,12 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
  {
    NS_ASSERTION(!gService, "Ruh-roh!  This service has already been created!");
    gService = this;
-+
-+  nsCOMPtr<nsIObserverService> observerService =
-+    mozilla::services::GetObserverService();
-+  NS_WARN_IF_FALSE(observerService, "Could not get observer service.");
-+  if (observerService) {
-+    nsresult rv = observerService->AddObserver(this,
-+                                               URI_VISIT_SAVED,
-+                                               PR_FALSE);
-+    NS_WARN_IF_FALSE(NS_SUCCEEDED(rv), "Could not add observer.");
-+  }
  }
  
  History::~History()
  {
    gService = NULL;
 +
-+  nsCOMPtr<nsIObserverService> observerService =
-+    mozilla::services::GetObserverService();
-+  if (observerService)
-+    (void)observerService->RemoveObserver(this, URI_VISIT_SAVED);
  #ifdef DEBUG
    if (mObservers.IsInitialized()) {
      NS_ASSERTION(mObservers.Count() == 0,
@@ -1273,49 +1290,62 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
  #endif
  }
  
-@@ -226,16 +749,138 @@ History::GetSingleton()
+ void
++History::AppendTask(Step* aTask)
++{
++  NS_PRECONDITION(aTask, "Got NULL task.");
++
++  aTask->AddRef();
++  mPendingVisits.Push(aTask);
++
++  if (mPendingVisits.GetSize() == 1) {
++    // There are no other pending tasks.
++    StartNextTask();
++  }
++}
++
++void
++History::CurrentTaskFinished()
++{
++  nsCOMPtr<Step> deadTaskWalking =
++    dont_AddRef(static_cast<Step*>(mPendingVisits.PopFront()));
++  StartNextTask();
++}
++
++void
+ History::NotifyVisited(nsIURI* aURI)
+ {
+   NS_ASSERTION(aURI, "Ruh-roh!  A NULL URI was passed to us!");
+ 
+   // If the hash table has not been initialized, then we have nothing to notify
+   // about.
+   if (!mObservers.IsInitialized()) {
+     return;
+@@ -223,20 +798,117 @@ History::GetSingleton()
+     gService = new History();
+     NS_ENSURE_TRUE(gService, nsnull);
+   }
  
    NS_ADDREF(gService);
    return gService;
  }
  
++void
++History::StartNextTask()
++{
++  nsCOMPtr<Step> nextTask =
++    static_cast<Step*>(mPendingVisits.PeekFront());
++  if (!nextTask) {
++    // No more pending visits left to process.
++    return;
++  }
++  nextTask->Callback(NULL);
++}
++
  ////////////////////////////////////////////////////////////////////////////////
  //// IHistory
  
-+void
-+History::StartNextVisitURI()
-+{
-+  VisitURIData* data = (VisitURIData*) mPendingVisits.PeekFront();
-+  if (!data)
-+    // No more pending visits left to process.
-+    return;
-+  
-+  nsNavHistory* history = nsNavHistory::GetHistoryService();
-+  if (!history) {
-+    NS_WARNING("Could not get history service");
-+    return;
-+  }
-+
-+  // Find existing entry in moz_places table, if any.
-+  nsCOMPtr<mozIStorageStatement> stmt =
-+    history->GetStatementById(DB_GET_PAGE_VISIT_STATS);
-+  if (!stmt) {
-+    NS_WARNING("Could not get statement");
-+    return;
-+  }
-+
-+  nsresult rv = URIBinder::Bind(stmt, NS_LITERAL_CSTRING("page_url"), data->uri);
-+  if (!NS_SUCCEEDED(rv)) {
-+    NS_WARNING("Could not bind parameter");
-+    return;
-+  }
-+
-+  nsCOMPtr<Step> step = new CheckExistingStep(data);
-+  rv = step->ExecuteAsync(stmt);
-+  NS_WARN_IF_FALSE(NS_SUCCEEDED(rv), "Could not execute statement");
-+}
-+
-+NS_IMETHODIMP
+ NS_IMETHODIMP
 +History::VisitURI(nsIURI* aURI,
 +                  nsIURI* aLastVisitedURI,
 +                  PRUint32 aFlags)
@@ -1388,12 +1418,8 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
 +  data->dateTime = PR_Now();
 +  data->uri = aURI;
 +
-+  // Queue will own data's lifetime
-+  mPendingVisits.Push(data.forget());
-+  if (mPendingVisits.GetSize() == 1) {
-+    // There are no other pending visits.
-+    StartNextVisitURI();
-+  }
++  nsCOMPtr<Step> task(new StartVisitURIStep(data));
++  AppendTask(task);
 +
 +  nsCOMPtr<nsIObserverService> obsService =
 +    mozilla::services::GetObserverService();
@@ -1404,7 +1430,7 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
 +  return NS_OK;
 +}
 +
- NS_IMETHODIMP
++NS_IMETHODIMP
  History::RegisterVisitedCallback(nsIURI* aURI,
                                   Link* aLink)
  {
@@ -1412,52 +1438,27 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
    NS_ASSERTION(aLink, "Must pass a non-null Link object!");
  
    // First, ensure that our hash table is setup.
-@@ -304,17 +949,39 @@ History::UnregisterVisitedCallback(nsIUR
-   if (observers.IsEmpty()) {
-     mObservers.RemoveEntry(aURI);
-   }
+   if (!mObservers.IsInitialized()) {
+@@ -307,14 +979,14 @@ History::UnregisterVisitedCallback(nsIUR
  
    return NS_OK;
  }
  
  ////////////////////////////////////////////////////////////////////////////////
-+//// nsIObserver
-+
-+NS_IMETHODIMP
-+History::Observe(nsISupports* aSubject,
-+                 const char* aTopic,
-+                 const PRUnichar* aData)
-+{
-+  VisitURIData* data = static_cast<VisitURIData*>(mPendingVisits.PeekFront());
-+  nsCOMPtr<nsIURI> uri = do_QueryInterface(aSubject);
-+  NS_ENSURE_STATE(uri);
-+
-+  if (data && uri == data->uri) {
-+    nsAutoPtr<VisitURIData> deadDataWalking(
-+      (VisitURIData*) mPendingVisits.PopFront());
-+    StartNextVisitURI();
-+  }
-+
-+  return NS_OK;
-+}
-+
-+////////////////////////////////////////////////////////////////////////////////
  //// nsISupports
  
--NS_IMPL_ISUPPORTS1(
-+NS_IMPL_ISUPPORTS2(
-   History,
+ NS_IMPL_ISUPPORTS1(
+-  History,
 -  IHistory
-+  IHistory,
-+  nsIObserver
++  History
++, IHistory
  )
  
  } // namespace places
  } // namespace mozilla
-diff --git a/toolkit/components/places/src/History.h b/toolkit/components/places/src/History.h
---- a/toolkit/components/places/src/History.h
-+++ b/toolkit/components/places/src/History.h
-@@ -41,28 +41,31 @@
+--- a/toolkit/components/places/src/History.h	
++++ a/toolkit/components/places/src/History.h	
+@@ -41,16 +41,17 @@ 
  #define mozilla_places_History_h_
  
  #include "mozilla/IHistory.h"
@@ -1475,21 +1476,40 @@ diff --git a/toolkit/components/places/src/History.h b/toolkit/components/places
    {0x9fc91e65, 0x1475, 0x4353, {0x9b, 0x9a, 0x93, 0xd7, 0x6f, 0x5b, 0xd9, 0xb7}}
  
  class History : public IHistory
-+              , public nsIObserver
- {
- public:
-   NS_DECL_ISUPPORTS
-   NS_DECL_IHISTORY
-+  NS_DECL_NSIOBSERVER
- 
-   History();
- 
-   /**
+@@ -65,29 +66,69 @@ public:
     * Notifies about the visited status of a given URI.
     *
     * @param aURI
     *        The URI to notify about.
-@@ -78,16 +81,39 @@ public:
+    */
+   void NotifyVisited(nsIURI *aURI);
+ 
+   /**
++   * Append a task to the queue for SQL queries that need to happen
++   * atomically.
++   *
++   * @pre aTask is not null
++   *
++   * @param aTask
++   *        Task that needs to be completed atomically
++   */
++  void AppendTask(class Step* aTask);
++
++  /**
++   * Call when all steps of the current running task are finished.  Each task
++   * should be responsible for calling this when it is finished (even if there
++   * are errors).
++   *
++   * Do not call this twice for the same visit.
++   */
++  void CurrentTaskFinished();
++
++  /**
+    * Obtains a pointer to this service.
+    */
+   static History *GetService();
+ 
+   /**
     * Obtains a pointer that has had AddRef called on it.  Used by the service
     * manager only.
     */
@@ -1513,13 +1533,10 @@ diff --git a/toolkit/components/places/src/History.h b/toolkit/components/places
 +  nsDeque mPendingVisits;
 +
 +  /**
-+   * Begins next visit URI procedure for the data at the front of the visit
-+   * queue. When all the steps are finished, the data will be removed from
-+   * the queue.
-+   *
-+   * Do not call this twice for the same visit.
++   * Begins next task at the front of the queue.  The task remains in the queue
++   * until it is done and calls CurrentTaskFinished.
 +   */
-+  void StartNextVisitURI();
++  void StartNextTask();
 +
    static History *gService;
  
@@ -1529,21 +1546,9 @@ diff --git a/toolkit/components/places/src/History.h b/toolkit/components/places
    {
    public:
      KeyClass(const nsIURI *aURI)
-diff --git a/toolkit/components/places/src/nsNavHistory.cpp b/toolkit/components/places/src/nsNavHistory.cpp
---- a/toolkit/components/places/src/nsNavHistory.cpp
-+++ b/toolkit/components/places/src/nsNavHistory.cpp
-@@ -72,32 +72,26 @@
- #include "nsFaviconService.h"
- 
- #include "nsPlacesTables.h"
- #include "nsPlacesIndexes.h"
- #include "nsPlacesTriggers.h"
- #include "nsPlacesMacros.h"
- #include "SQLFunctions.h"
- #include "Helpers.h"
--#include "History.h"
- 
- #include "mozilla/FunctionTimer.h"
+--- a/toolkit/components/places/src/nsNavHistory.cpp	
++++ a/toolkit/components/places/src/nsNavHistory.cpp	
+@@ -83,21 +83,16 @@ 
  
  #ifdef MOZ_XUL
  #include "nsIAutoCompleteInput.h"
@@ -1565,7 +1570,7 @@ diff --git a/toolkit/components/places/src/nsNavHistory.cpp b/toolkit/components
  #define RECENT_EVENT_QUEUE_MAX_LENGTH 128
  
  // preference ID strings
-@@ -232,31 +226,22 @@ NS_IMPL_CI_INTERFACE_GETTER5(
+@@ -232,31 +227,22 @@ NS_IMPL_CI_INTERFACE_GETTER5(
  , nsIGlobalHistory3
  , nsIGlobalHistory2
  , nsIDownloadHistory
@@ -1597,7 +1602,7 @@ diff --git a/toolkit/components/places/src/nsNavHistory.cpp b/toolkit/components
      bool hasRecentCorruptDB()
      {
        nsCOMPtr<nsIFile> profDir;
-@@ -904,16 +889,37 @@ nsNavHistory::GetDatabaseStatus(PRUint16
+@@ -904,16 +890,37 @@ nsNavHistory::GetDatabaseStatus(PRUint16
   */
  nsresult
  nsNavHistory::UpdateSchemaVersion()
@@ -1635,7 +1640,7 @@ diff --git a/toolkit/components/places/src/nsNavHistory.cpp b/toolkit/components
  public:
    NS_DECL_ISUPPORTS
    NS_DECL_MOZISTORAGEFUNCTION
-@@ -1860,16 +1866,19 @@ nsNavHistory::GetUrlIdFor(nsIURI* aURI, 
+@@ -1860,16 +1867,19 @@ nsNavHistory::GetUrlIdFor(nsIURI* aURI, 
  
  
  // nsNavHistory::InternalAddNewPage
@@ -1655,7 +1660,7 @@ diff --git a/toolkit/components/places/src/nsNavHistory.cpp b/toolkit/components
                                   PRBool aHidden,
                                   PRBool aTyped,
                                   PRInt32 aVisitCount,
-@@ -2157,16 +2166,32 @@ nsNavHistory::GetNewSessionID()
+@@ -2157,16 +2167,32 @@ nsNavHistory::GetNewSessionID()
      mLastSessionID = selectSession->AsInt64(0) + 1;
    else
      mLastSessionID = 1;
@@ -1688,7 +1693,7 @@ diff --git a/toolkit/components/places/src/nsNavHistory.cpp b/toolkit/components
        "SELECT ROUND(( "
          "strftime('%s','now','localtime','utc') - "
          "( "
-@@ -2853,41 +2878,35 @@ nsNavHistory::AddVisit(nsIURI* aURI, PRT
+@@ -2853,24 +2879,21 @@ nsNavHistory::AddVisit(nsIURI* aURI, PRT
    // important to notify the observers below.
    nsNavBookmarks *bs = nsNavBookmarks::GetBookmarksService();
    NS_ENSURE_TRUE(bs, NS_ERROR_OUT_OF_MEMORY);
@@ -1715,24 +1720,7 @@ diff --git a/toolkit/components/places/src/nsNavHistory.cpp b/toolkit/components
    // (since we implement nsIDownloadHistory) this will not happen and we need to
    // send it ourselves.
    if (newItem && (aIsRedirect || aTransitionType == TRANSITION_DOWNLOAD)) {
-     nsCOMPtr<nsIObserverService> obsService =
-       do_GetService(NS_OBSERVERSERVICE_CONTRACTID);
-     if (obsService)
-       obsService->NotifyObservers(aURI, NS_LINK_VISITED_EVENT_TOPIC, nsnull);
-   }
- 
--  // Because we implement IHistory, we always have to notify about the visit.
--  History::GetService()->NotifyVisited(aURI);
--
-   return NS_OK;
- }
- 
- 
- // nsNavHistory::GetNewQuery
- 
- NS_IMETHODIMP
- nsNavHistory::GetNewQuery(nsINavHistoryQuery **_retval)
-@@ -7476,62 +7495,16 @@ nsNavHistory::RemoveDuplicateURIs()
+@@ -7476,62 +7499,16 @@ nsNavHistory::RemoveDuplicateURIs()
    rv = transaction.Commit();
    NS_ENSURE_SUCCESS(rv, rv);
    return NS_OK;
@@ -1795,10 +1783,9 @@ diff --git a/toolkit/components/places/src/nsNavHistory.cpp b/toolkit/components
  //
  //    A simple bookmarks query will result in a hierarchical tree of
  //    bookmark items, folders and separators.
-diff --git a/toolkit/components/places/src/nsNavHistory.h b/toolkit/components/places/src/nsNavHistory.h
---- a/toolkit/components/places/src/nsNavHistory.h
-+++ b/toolkit/components/places/src/nsNavHistory.h
-@@ -83,16 +83,20 @@
+--- a/toolkit/components/places/src/nsNavHistory.h	
++++ a/toolkit/components/places/src/nsNavHistory.h	
+@@ -83,16 +83,20 @@ 
  // mInPrivateBrowsing member
  #define PRIVATEBROWSING_NOTINITED (PRBool(0xffffffff))
  
@@ -1819,7 +1806,7 @@ diff --git a/toolkit/components/places/src/nsNavHistory.h b/toolkit/components/p
  #define TOPIC_PLACES_SHUTDOWN "places-shutdown"
  // Fired when Places found a locked database while initing.
  #define TOPIC_DATABASE_LOCKED "places-database-locked"
-@@ -103,16 +107,21 @@
+@@ -103,16 +107,21 @@ 
  
  namespace mozilla {
  namespace places {
@@ -1927,9 +1914,8 @@ diff --git a/toolkit/components/places/src/nsNavHistory.h b/toolkit/components/p
  
    nsresult AutoCompleteFeedback(PRInt32 aIndex,
                                  nsIAutoCompleteController *aController);
-diff --git a/toolkit/components/places/tests/browser/Makefile.in b/toolkit/components/places/tests/browser/Makefile.in
---- a/toolkit/components/places/tests/browser/Makefile.in
-+++ b/toolkit/components/places/tests/browser/Makefile.in
+--- a/toolkit/components/places/tests/browser/Makefile.in	
++++ a/toolkit/components/places/tests/browser/Makefile.in	
 @@ -42,26 +42,31 @@ srcdir		= @srcdir@
  VPATH		= @srcdir@
  relativesrcdir  = toolkit/components/places/tests/browser
@@ -1962,11 +1948,9 @@ diff --git a/toolkit/components/places/tests/browser/Makefile.in b/toolkit/compo
  
  libs:: $(_HTTP_FILES)
  	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/tests/$(relativesrcdir)
-diff --git a/toolkit/components/places/tests/browser/browser_visituri.js b/toolkit/components/places/tests/browser/browser_visituri.js
-new file mode 100644
---- /dev/null
-+++ b/toolkit/components/places/tests/browser/browser_visituri.js
-@@ -0,0 +1,111 @@
+--- a/toolkit/components/places/tests/browser/browser_visituri.js	
++++ a/toolkit/components/places/tests/browser/browser_visituri.js	
+@@ -0,0 +1,106 @@ 
 +/**
 + * Any copyright is dedicated to the Public Domain.
 + * http://creativecommons.org/publicdomain/zero/1.0/
@@ -2009,9 +1993,9 @@ new file mode 100644
 + */
 +function getColumn(table, column, fromColumnName, fromColumnValue) {
 +  var stmt = conn.createStatement(
-+    "SELECT " + column + " FROM " + table + " WHERE " + fromColumnName + "=:val " +
-+    "UNION ALL " +
 +    "SELECT " + column + " FROM " + table + "_temp WHERE " + fromColumnName + "=:val " +
++    "UNION ALL " +
++    "SELECT " + column + " FROM " + table + " WHERE " + fromColumnName + "=:val " +
 +    "LIMIT 1");
 +  try {
 +    stmt.params.val = fromColumnValue;
@@ -2028,14 +2012,6 @@ new file mode 100644
 +  // transitions.
 +
 +  waitForExplicitFinish();
-+
-+  // This test has two different test paths that finish independent of each other.
-+  // They will call finishPart when  finish successfully.
-+  var numberParts = 2;
-+  function finishPart() {
-+    if (--numberParts == 0)
-+      finish();
-+  }
 +
 +  // Part 1: observe history events that fire when a visit occurs.
 +  // Make sure visits appear in order, and that the visit chain is correct.
@@ -2076,35 +2052,32 @@ new file mode 100644
 +  content.location.href = "http://example.com/tests/toolkit/components/places/tests/browser/begin.html";
 +  waitForLoad(function() {
 +    EventUtils.sendMouseEvent({type: 'click'}, 'clickme', content.window);
++    waitForLoad(function() {
++      content.location.href = "about:blank";
++    });
 +  });
 +}
-diff --git a/toolkit/components/places/tests/browser/visituri/begin.html b/toolkit/components/places/tests/browser/visituri/begin.html
-new file mode 100644
---- /dev/null
-+++ b/toolkit/components/places/tests/browser/visituri/begin.html
-@@ -0,0 +1,6 @@
+--- a/toolkit/components/places/tests/browser/visituri/begin.html	
++++ a/toolkit/components/places/tests/browser/visituri/begin.html	
+@@ -0,0 +1,6 @@ 
 +<!--
 + Any copyright is dedicated to the Public Domain.
 + http://creativecommons.org/publicdomain/zero/1.0/
 +-->
 +
 +<a id="clickme" href="redirect_twice.sjs">Redirect twice</a>
-diff --git a/toolkit/components/places/tests/browser/visituri/final.html b/toolkit/components/places/tests/browser/visituri/final.html
-new file mode 100644
---- /dev/null
-+++ b/toolkit/components/places/tests/browser/visituri/final.html
-@@ -0,0 +1,6 @@
+--- a/toolkit/components/places/tests/browser/visituri/final.html	
++++ a/toolkit/components/places/tests/browser/visituri/final.html	
+@@ -0,0 +1,6 @@ 
 +<!--
 + Any copyright is dedicated to the Public Domain.
 + http://creativecommons.org/publicdomain/zero/1.0/
 +-->
 +
 +OK we're done!
-diff --git a/toolkit/components/places/tests/browser/visituri/redirect_once.sjs b/toolkit/components/places/tests/browser/visituri/redirect_once.sjs
-new file mode 100644
---- /dev/null
-+++ b/toolkit/components/places/tests/browser/visituri/redirect_once.sjs
-@@ -0,0 +1,9 @@
+--- a/toolkit/components/places/tests/browser/visituri/redirect_once.sjs	
++++ a/toolkit/components/places/tests/browser/visituri/redirect_once.sjs	
+@@ -0,0 +1,9 @@ 
 +/**
 + * Any copyright is dedicated to the Public Domain.
 + * http://creativecommons.org/publicdomain/zero/1.0/
@@ -2114,11 +2087,9 @@ new file mode 100644
 +  response.setStatusLine("1.1", 302, "Found");
 +  response.setHeader("Location", "final.html", false);
 +}
-diff --git a/toolkit/components/places/tests/browser/visituri/redirect_twice.sjs b/toolkit/components/places/tests/browser/visituri/redirect_twice.sjs
-new file mode 100644
---- /dev/null
-+++ b/toolkit/components/places/tests/browser/visituri/redirect_twice.sjs
-@@ -0,0 +1,9 @@
+--- a/toolkit/components/places/tests/browser/visituri/redirect_twice.sjs	
++++ a/toolkit/components/places/tests/browser/visituri/redirect_twice.sjs	
+@@ -0,0 +1,9 @@ 
 +/**
 + * Any copyright is dedicated to the Public Domain.
 + * http://creativecommons.org/publicdomain/zero/1.0/
@@ -2128,10 +2099,9 @@ new file mode 100644
 +  response.setStatusLine("1.1", 302, "Found");
 +  response.setHeader("Location", "redirect_once.sjs", false);
 +}
-diff --git a/toolkit/components/places/tests/cpp/places_test_harness.h b/toolkit/components/places/tests/cpp/places_test_harness.h
---- a/toolkit/components/places/tests/cpp/places_test_harness.h
-+++ b/toolkit/components/places/tests/cpp/places_test_harness.h
-@@ -42,16 +42,19 @@
+--- a/toolkit/components/places/tests/cpp/places_test_harness.h	
++++ a/toolkit/components/places/tests/cpp/places_test_harness.h	
+@@ -42,16 +42,19 @@ 
  #include "nsThreadUtils.h"
  #include "nsNetUtil.h"
  #include "nsDocShellCID.h"
@@ -2286,10 +2256,9 @@ diff --git a/toolkit/components/places/tests/cpp/places_test_harness.h b/toolkit
 +  rv = stmt->GetInt32(2, &result.transitionType);
 +  do_check_success(rv);
 +}
-diff --git a/toolkit/components/places/tests/cpp/test_IHistory.cpp b/toolkit/components/places/tests/cpp/test_IHistory.cpp
---- a/toolkit/components/places/tests/cpp/test_IHistory.cpp
-+++ b/toolkit/components/places/tests/cpp/test_IHistory.cpp
-@@ -33,16 +33,17 @@
+--- a/toolkit/components/places/tests/cpp/test_IHistory.cpp	
++++ a/toolkit/components/places/tests/cpp/test_IHistory.cpp	
+@@ -33,16 +33,17 @@ 
   * decision by deleting the provisions above and replace them with the notice
   * and other provisions required by the GPL or the LGPL. If you do not delete
   * the provisions above, a recipient may use your version of this file under
