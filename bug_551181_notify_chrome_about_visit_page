@@ -75,7 +75,7 @@ diff --git a/dom/ipc/ContentProcessParent.h b/dom/ipc/ContentProcessParent.h
      virtual bool RecvPrefIsLocked(const nsCString& prefName,
              PRBool* retValue, nsresult* rv);
  
-     virtual bool GetChildList(const nsCString& domain,
+     virtual bool RecvGetChildList(const nsCString& domain,
              nsTArray<nsCString>* list, nsresult* rv);
  
      void EnsurePrefService();
@@ -159,7 +159,7 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
  #include "mozilla/storage.h"
  #include "mozilla/dom/Link.h"
  #include "nsDocShellCID.h"
-@@ -789,16 +794,26 @@ History::StartNextVisitURI()
+@@ -963,16 +968,26 @@ History::StartNextTask()
  
  NS_IMETHODIMP
  History::VisitURI(nsIURI* aURI,

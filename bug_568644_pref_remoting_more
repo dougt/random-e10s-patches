@@ -49,7 +49,7 @@ diff --git a/dom/ipc/ContentProcessParent.h b/dom/ipc/ContentProcessParent.h
      virtual bool RecvPrefIsLocked(const nsCString& prefName,
              PRBool* retValue, nsresult* rv);
  
-+    virtual bool GetChildList(const nsCString& domain,
++    virtual bool RecvGetChildList(const nsCString& domain,
 +            nsTArray<nsCString>* list, nsresult* rv);
 +
      void EnsurePrefService();
