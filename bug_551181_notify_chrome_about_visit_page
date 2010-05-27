@@ -20,7 +20,7 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
  
  using namespace mozilla::ipc;
  using namespace mozilla::net;
-@@ -373,16 +373,29 @@ ContentProcessParent::RequestRunToComple
+@@ -392,16 +392,29 @@ ContentProcessParent::RequestRunToComple
          printf("Running to completion...\n");
  #endif
          mRunToCompletionDepth = 1;
@@ -71,19 +71,19 @@ diff --git a/dom/ipc/ContentProcessParent.h b/dom/ipc/ContentProcessParent.h
  class TestShellParent;
  }
  
-@@ -130,16 +131,20 @@ private:
-     virtual bool RecvPrefHasUserValue(const nsCString& prefName,
-             PRBool* retValue, nsresult* rv);
- 
+@@ -133,16 +134,20 @@ private:
      virtual bool RecvPrefIsLocked(const nsCString& prefName,
              PRBool* retValue, nsresult* rv);
+ 
+     virtual bool GetChildList(const nsCString& domain,
+             nsTArray<nsCString>* list, nsresult* rv);
  
      void EnsurePrefService();
  
 +    virtual bool RecvVisitURI(const IPC::URI& uri,
 +                              const IPC::URI& referrer,
 +                              const PRUint32& flags);
-+    
++
      mozilla::Monitor mMonitor;
  
      GeckoChildProcessHost* mSubprocess;

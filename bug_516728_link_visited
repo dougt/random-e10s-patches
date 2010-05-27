@@ -126,7 +126,7 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
                  threadInt->SetObserver(parent);
              }
          }
-@@ -300,16 +307,22 @@ ContentProcessParent::Observe(nsISupport
+@@ -319,16 +326,22 @@ ContentProcessParent::Observe(nsISupport
          SendNotifyRemotePrefObserver(strData);
      }
  
@@ -149,7 +149,7 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
  {
    TabParent* parent = new TabParent();
    if (parent){
-@@ -375,24 +388,33 @@ ContentProcessParent::RequestRunToComple
+@@ -394,24 +407,33 @@ ContentProcessParent::RequestRunToComple
          mRunToCompletionDepth = 1;
          mShouldCallUnblockChild = true;
      }
@@ -187,15 +187,15 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
 diff --git a/dom/ipc/ContentProcessParent.h b/dom/ipc/ContentProcessParent.h
 --- a/dom/ipc/ContentProcessParent.h
 +++ b/dom/ipc/ContentProcessParent.h
-@@ -135,16 +135,18 @@ private:
-             PRBool* retValue, nsresult* rv);
+@@ -138,16 +138,18 @@ private:
+             nsTArray<nsCString>* list, nsresult* rv);
  
      void EnsurePrefService();
  
      virtual bool RecvVisitURI(const IPC::URI& uri,
                                const IPC::URI& referrer,
                                const PRUint32& flags);
-     
+ 
 +    virtual bool RecvStartVisitedQuery(const IPC::URI& uri);
 +
      mozilla::Monitor mMonitor;

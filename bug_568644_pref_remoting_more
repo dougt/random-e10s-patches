@@ -1,0 +1,220 @@
+diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
+--- a/dom/ipc/ContentProcessParent.cpp
++++ b/dom/ipc/ContentProcessParent.cpp
+@@ -243,16 +243,35 @@ ContentProcessParent::RecvPrefIsLocked(c
+     *retValue = PR_FALSE;
+ 
+     EnsurePrefService();
+     *rv = mPrefService->PrefIsLocked(prefName.get(), retValue);
+         
+     return true;
+ }
+ 
++bool
++ContentProcessParent::RecvGetChildList(const nsCString& domain,
++                                       nsTArray<nsCString>* list, nsresult* rv)
++{
++    EnsurePrefService();
++
++    PRUint32 count;
++    char **childArray;
++    *rv = mPrefService->GetChildList(domain.get(), &count, &childArray);
++
++    if (NS_SUCCEEDED(*rv)) {
++      list->SetCapacity(count);
++      for (PRUint32 i = 0; i < count; ++i)
++        *(list->AppendElement()) = childArray[i];
++    }
++        
++    return true;
++}
++
+ void
+ ContentProcessParent::EnsurePrefService()
+ {
+     nsresult rv;
+     if (!mPrefService) {
+         mPrefService = do_GetService(NS_PREFSERVICE_CONTRACTID, &rv);
+         NS_ASSERTION(NS_SUCCEEDED(rv), 
+                      "We lost prefService in the Chrome process !");
+diff --git a/dom/ipc/ContentProcessParent.h b/dom/ipc/ContentProcessParent.h
+--- a/dom/ipc/ContentProcessParent.h
++++ b/dom/ipc/ContentProcessParent.h
+@@ -128,16 +128,19 @@ private:
+             nsString* retValue, nsresult* rv);
+ 
+     virtual bool RecvPrefHasUserValue(const nsCString& prefName,
+             PRBool* retValue, nsresult* rv);
+ 
+     virtual bool RecvPrefIsLocked(const nsCString& prefName,
+             PRBool* retValue, nsresult* rv);
+ 
++    virtual bool GetChildList(const nsCString& domain,
++            nsTArray<nsCString>* list, nsresult* rv);
++
+     void EnsurePrefService();
+ 
+     mozilla::Monitor mMonitor;
+ 
+     GeckoChildProcessHost* mSubprocess;
+ 
+     int mRunToCompletionDepth;
+     bool mShouldCallUnblockChild;
+diff --git a/dom/ipc/PContentProcess.ipdl b/dom/ipc/PContentProcess.ipdl
+--- a/dom/ipc/PContentProcess.ipdl
++++ b/dom/ipc/PContentProcess.ipdl
+@@ -74,12 +74,13 @@ parent:
+     // prefs-related messages ...
+     sync GetPrefType(nsCString prefName) returns (PRInt32 retValue, nsresult rv);
+     sync GetBoolPref(nsCString prefName) returns (PRBool retValue, nsresult rv);
+     sync GetIntPref(nsCString prefName)  returns (PRInt32 retValue, nsresult rv);
+     sync GetCharPref(nsCString prefName) returns (nsCString retValue, nsresult rv);
+     sync GetPrefLocalizedString(nsCString prefName) returns (nsString retValue, nsresult rv);
+     sync PrefHasUserValue(nsCString prefName) returns (PRBool retValue, nsresult rv);
+     sync PrefIsLocked(nsCString prefName) returns (PRBool retValue, nsresult rv);
++    sync GetChildList(nsCString domain) returns (nsCString[] list, nsresult rv);
+ };
+ 
+ }
+ }
+diff --git a/modules/libpref/src/nsPrefBranch.cpp b/modules/libpref/src/nsPrefBranch.cpp
+--- a/modules/libpref/src/nsPrefBranch.cpp
++++ b/modules/libpref/src/nsPrefBranch.cpp
+@@ -62,17 +62,17 @@
+ #include "nsCRT.h"
+ #include "mozilla/Services.h"
+ 
+ #include "prefapi_private_data.h"
+ 
+ // Definitions
+ struct EnumerateData {
+   const char  *parent;
+-  nsVoidArray *pref_list;
++  nsTArray<nsCString> *pref_list;
+ };
+ 
+ struct PrefCallbackData {
+   nsPrefBranch     *pBranch;
+   nsIObserver      *pObserver;
+   nsIWeakReference *pWeakRef;
+   char pDomain[1];
+ };
+@@ -682,64 +682,77 @@ NS_IMETHODIMP nsPrefBranch::DeleteBranch
+     rv = PREF_DeleteBranch(pref);
+   }
+   return rv;
+ }
+ 
+ NS_IMETHODIMP nsPrefBranch::GetChildList(const char *aStartingAt, PRUint32 *aCount, char ***aChildArray)
+ {
+   char            **outArray;
+-  char            *theElement;
+   PRInt32         numPrefs;
+   PRInt32         dwIndex;
+   EnumerateData   ed;
+-  nsAutoVoidArray prefArray;
++  nsAutoTArray<nsCString, 32> prefArray;
+ 
+   NS_ENSURE_ARG_POINTER(aStartingAt);
+   NS_ENSURE_ARG_POINTER(aCount);
+   NS_ENSURE_ARG_POINTER(aChildArray);
+ 
+-  if (!gHashTable.ops) {
+-    *aChildArray = nsnull;
+-    *aCount = 0;
+-    return NS_ERROR_NOT_INITIALIZED;
++  *aChildArray = nsnull;
++  *aCount = 0;
++
++#ifdef MOZ_IPC
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    mozilla::dom::ContentProcessChild *cpc = 
++      mozilla::dom::ContentProcessChild::GetSingleton();
++    NS_ASSERTION(cpc, "Content Protocol is NULL!");
++
++    nsresult rv;
++    cpc->SendGetChildList(nsDependentCString(getPrefName(aStartingAt)),
++                          &prefArray, &rv);
++    if (NS_FAILED(rv)) return rv;
++
++  } else
++#endif
++  {
++    if (!gHashTable.ops)
++      return NS_ERROR_NOT_INITIALIZED;
++
++    // this will contain a list of all the pref name strings
++    // allocate on the stack for speed
++
++    ed.parent = getPrefName(aStartingAt);
++    ed.pref_list = &prefArray;
++    PL_DHashTableEnumerate(&gHashTable, pref_enumChild, &ed);
+   }
+ 
+-  // this will contain a list of all the pref name strings
+-  // allocate on the stack for speed
+-
+-  ed.parent = getPrefName(aStartingAt);
+-  ed.pref_list = &prefArray;
+-  PL_DHashTableEnumerate(&gHashTable, pref_enumChild, &ed);
+-
+   // now that we've built up the list, run the callback on
+   // all the matching elements
+-  numPrefs = prefArray.Count();
++  numPrefs = prefArray.Length();
+ 
+   if (numPrefs) {
+     outArray = (char **)nsMemory::Alloc(numPrefs * sizeof(char *));
+     if (!outArray)
+       return NS_ERROR_OUT_OF_MEMORY;
+ 
+     for (dwIndex = 0; dwIndex < numPrefs; ++dwIndex) {
+       // we need to lop off mPrefRoot in case the user is planning to pass this
+       // back to us because if they do we are going to add mPrefRoot again.
+-      theElement = ((char *)prefArray.ElementAt(dwIndex)) + mPrefRootLength;
+-      outArray[dwIndex] = (char *)nsMemory::Clone(theElement, strlen(theElement) + 1);
+- 
++      const nsCString& element = prefArray[dwIndex];
++      outArray[dwIndex] = (char *)nsMemory::Clone(
++        element.get() + mPrefRootLength, element.Length() - mPrefRootLength + 1);
++
+       if (!outArray[dwIndex]) {
+         // we ran out of memory... this is annoying
+         NS_FREE_XPCOM_ALLOCATED_POINTER_ARRAY(dwIndex, outArray);
+         return NS_ERROR_OUT_OF_MEMORY;
+       }
+     }
+     *aChildArray = outArray;
+-  } else {
+-    *aChildArray = nsnull;
+-  } /* endif */
++  }
+   *aCount = numPrefs;
+ 
+   return NS_OK;
+ }
+ 
+ 
+ /*
+  *  nsIPrefBranch2 methods
+@@ -1014,18 +1027,18 @@ nsresult nsPrefBranch::getValidatedPrefN
+ }
+ 
+ static PLDHashOperator
+ pref_enumChild(PLDHashTable *table, PLDHashEntryHdr *heh,
+                PRUint32 i, void *arg)
+ {
+   PrefHashEntry *he = static_cast<PrefHashEntry*>(heh);
+   EnumerateData *d = reinterpret_cast<EnumerateData *>(arg);
+-  if (PL_strncmp(he->key, d->parent, PL_strlen(d->parent)) == 0) {
+-    d->pref_list->AppendElement((void*)he->key);
++  if (strncmp(he->key, d->parent, strlen(d->parent)) == 0) {
++    d->pref_list->AppendElement(he->key);
+   }
+   return PL_DHASH_NEXT;
+ }
+ 
+ 
+ /*
+  * nsISecurityPref methods
+  *
