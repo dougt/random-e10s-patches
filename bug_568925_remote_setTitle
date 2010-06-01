@@ -1,0 +1,107 @@
+diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
+--- a/dom/ipc/ContentProcessParent.cpp
++++ b/dom/ipc/ContentProcessParent.cpp
+@@ -427,16 +427,27 @@ ContentProcessParent::RecvVisitURI(const
+ {
+     nsCOMPtr<nsIURI> ourURI = uri;
+     nsCOMPtr<nsIURI> ourReferrer = referrer;
+     IHistory *history = nsContentUtils::GetHistory(); 
+     history->VisitURI(ourURI, ourReferrer, flags);
+     return true;
+ }
+ 
++
++bool
++ContentProcessParent::RecvSetURITitle(const IPC::URI& uri,
++                                      const nsString& title)
++{
++    nsCOMPtr<nsIURI> ourURI = uri;
++    IHistory *history = nsContentUtils::GetHistory(); 
++    history->SetURITitle(ourURI, title);
++    return true;
++}
++
+ /* void onDispatchedEvent (in nsIThreadInternal thread); */
+ NS_IMETHODIMP
+ ContentProcessParent::OnDispatchedEvent(nsIThreadInternal *thread)
+ {
+     if (mOldObserver)
+         return mOldObserver->OnDispatchedEvent(thread);
+ 
+     return NS_OK;
+diff --git a/dom/ipc/ContentProcessParent.h b/dom/ipc/ContentProcessParent.h
+--- a/dom/ipc/ContentProcessParent.h
++++ b/dom/ipc/ContentProcessParent.h
+@@ -140,16 +140,19 @@ private:
+     void EnsurePrefService();
+ 
+     virtual bool RecvVisitURI(const IPC::URI& uri,
+                               const IPC::URI& referrer,
+                               const PRUint32& flags);
+ 
+     virtual bool RecvStartVisitedQuery(const IPC::URI& uri);
+ 
++    virtual bool RecvSetURITitle(const IPC::URI& uri,
++                                 const nsString& title);
++
+     mozilla::Monitor mMonitor;
+ 
+     GeckoChildProcessHost* mSubprocess;
+ 
+     int mRunToCompletionDepth;
+     bool mShouldCallUnblockChild;
+     nsCOMPtr<nsIThreadObserver> mOldObserver;
+ 
+diff --git a/dom/ipc/PContentProcess.ipdl b/dom/ipc/PContentProcess.ipdl
+--- a/dom/ipc/PContentProcess.ipdl
++++ b/dom/ipc/PContentProcess.ipdl
+@@ -71,16 +71,17 @@ child:
+     async NotifyVisited(URI uri);
+ 
+     NotifyRemotePrefObserver(nsCString aDomain);
+ 
+ parent:
+     PNecko();
+ 
+     async VisitURI(URI uri, URI referrer, PRUint32 flags);
++    async SetURITitle(URI uri, nsString title);
+     async StartVisitedQuery(URI uri);
+ 
+     // prefs-related messages ...
+     sync GetPrefType(nsCString prefName) returns (PRInt32 retValue, nsresult rv);
+     sync GetBoolPref(nsCString prefName) returns (PRBool retValue, nsresult rv);
+     sync GetIntPref(nsCString prefName)  returns (PRInt32 retValue, nsresult rv);
+     sync GetCharPref(nsCString prefName) returns (nsCString retValue, nsresult rv);
+     sync GetPrefLocalizedString(nsCString prefName) returns (nsString retValue, nsresult rv);
+diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/places/src/History.cpp
+--- a/toolkit/components/places/src/History.cpp
++++ b/toolkit/components/places/src/History.cpp
+@@ -1162,18 +1162,28 @@ History::UnregisterVisitedCallback(nsIUR
+ 
+   return NS_OK;
+ }
+ 
+ NS_IMETHODIMP
+ History::SetURITitle(nsIURI* aURI, const nsString& aTitle)
+ {
+   NS_PRECONDITION(aURI, "Must pass a non-null URI!");
++#ifdef MOZ_IPC
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    mozilla::dom::ContentProcessChild * cpc = 
++      mozilla::dom::ContentProcessChild::GetSingleton();
++    NS_ASSERTION(cpc, "Content Protocol is NULL!");
++    (void) cpc->SendSetURITitle(IPC::URI(aURI), aTitle);
++    return NS_OK;
++  } 
++#endif /* MOZ_IPC */
+ 
+   nsNavHistory* history = nsNavHistory::GetHistoryService();
++
+   PRBool canAdd;
+   nsresult rv = history->CanAddURI(aURI, &canAdd);
+   NS_ENSURE_SUCCESS(rv, rv);
+   if (!canAdd) {
+     return NS_OK;
+   }
+ 
+   nsAutoPtr<SetTitleData> data(new SetTitleData());
