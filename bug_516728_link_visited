@@ -76,7 +76,20 @@ diff --git a/dom/ipc/ContentProcessChild.h b/dom/ipc/ContentProcessChild.h
 diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
 --- a/dom/ipc/ContentProcessParent.cpp
 +++ b/dom/ipc/ContentProcessParent.cpp
-@@ -47,25 +47,27 @@
+@@ -35,31 +35,33 @@
+  * the provisions above, a recipient may use your version of this file under
+  * the terms of any one of the MPL, the GPL or the LGPL.
+  *
+  * ***** END LICENSE BLOCK ***** */
+ 
+ #include "ContentProcessParent.h"
+ 
+ #include "TabParent.h"
++#include "History.h"
+ #include "mozilla/ipc/TestShellParent.h"
+ #include "mozilla/net/NeckoParent.h"
+ #include "nsIPrefBranch.h"
+ #include "nsIPrefBranch2.h"
  #include "nsIPrefLocalizedString.h"
  #include "nsIObserverService.h"
  #include "nsContentUtils.h"
@@ -85,71 +98,19 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
  #include "nsServiceManagerUtils.h"
  #include "nsThreadUtils.h"
  #include "nsChromeRegistryChrome.h"
-+#include "mozilla/IHistory.h"
  
  using namespace mozilla::ipc;
  using namespace mozilla::net;
++using namespace mozilla::places;
  using mozilla::MonitorAutoEnter;
  
  namespace mozilla {
  namespace dom {
  
  #define NS_IPC_IOSERVICE_SET_OFFLINE_TOPIC "ipc:network:set-offline"
-+#define HISTORY_NOTIFY_VISITED_TOPIC "history-notify-visited"
  
  ContentProcessParent* ContentProcessParent::gSingleton;
- 
- ContentProcessParent*
- ContentProcessParent::GetSingleton(PRBool aForceNew)
- {
-     if (gSingleton && !gSingleton->IsAlive())
-         gSingleton = nsnull;
-@@ -82,16 +84,21 @@ ContentProcessParent::GetSingleton(PRBoo
-                     nsCOMPtr<nsIPrefBranch2> prefs 
-                         (do_GetService(NS_PREFSERVICE_CONTRACTID));
-                     if (prefs) {  
-                         prefs->AddObserver("", parent, PR_FALSE);
-                     }
-                 }
-                 obs->AddObserver(
-                   parent, NS_IPC_IOSERVICE_SET_OFFLINE_TOPIC, PR_FALSE); 
-+
-+                // listen for History changes
-+                obs->AddObserver(
-+                 parent, HISTORY_NOTIFY_VISITED_TOPIC, PR_FALSE);
-+                
-             }
-             nsCOMPtr<nsIThreadInternal>
-                 threadInt(do_QueryInterface(NS_GetCurrentThread()));
-             if (threadInt) {
-                 threadInt->GetObserver(getter_AddRefs(parent->mOldObserver));
-                 threadInt->SetObserver(parent);
-             }
-         }
-@@ -319,16 +326,22 @@ ContentProcessParent::Observe(nsISupport
-         SendNotifyRemotePrefObserver(strData);
-     }
- 
-     if (!strcmp(aTopic, NS_IPC_IOSERVICE_SET_OFFLINE_TOPIC) && mSubprocess) {
-       NS_ConvertUTF16toUTF8 dataStr(aData);
-       const char *offline = dataStr.get();
-       SendSetOffline(!strcmp(offline, "true") ? true : false);
-     }
-+
-+    else if (!strcmp(aTopic, HISTORY_NOTIFY_VISITED_TOPIC) && mSubprocess) {
-+      nsCOMPtr<nsIURI> uri = do_QueryInterface(aSubject);
-+      SendNotifyVisited(IPC::URI(uri));
-+    }
-+
-     return NS_OK;
- }
- 
- PIFrameEmbeddingParent*
- ContentProcessParent::AllocPIFrameEmbedding()
- {
-   TabParent* parent = new TabParent();
-   if (parent){
-@@ -394,24 +407,33 @@ ContentProcessParent::RequestRunToComple
+@@ -394,24 +396,33 @@ ContentProcessParent::RequestRunToComple
          mRunToCompletionDepth = 1;
          mShouldCallUnblockChild = true;
      }
@@ -281,25 +242,7 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
  #include "mozilla/storage.h"
  #include "mozilla/dom/Link.h"
  #include "nsDocShellCID.h"
-@@ -59,16 +64,17 @@ namespace mozilla {
- namespace places {
- 
- ////////////////////////////////////////////////////////////////////////////////
- //// Global Defines
- 
- #define URI_VISITED "visited"
- #define URI_NOT_VISITED "not visited"
- #define URI_VISITED_RESOLUTION_TOPIC "visited-status-resolution"
-+#define HISTORY_NOTIFY_VISITED_TOPIC "history-notify-visited"
- // Observer event fired after a visit has been registered in the DB.
- #define URI_VISIT_SAVED "uri-visit-saved"
- 
- ////////////////////////////////////////////////////////////////////////////////
- //// Step
- 
- class Step : public AsyncStatementCallback
- {
-@@ -891,16 +897,27 @@ History::CurrentTaskFinished()
+@@ -891,16 +896,25 @@ History::CurrentTaskFinished()
    StartNextTask();
  }
  
@@ -308,14 +251,12 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
  {
    NS_ASSERTION(aURI, "Ruh-roh!  A NULL URI was passed to us!");
  
-+  nsCOMPtr<nsIObserverService> observerService =
-+    do_GetService(NS_OBSERVERSERVICE_CONTRACTID);
-+
 +#ifdef MOZ_IPC
 +  if (XRE_GetProcessType() == GeckoProcessType_Default) {
-+    (void) observerService->NotifyObservers(aURI,
-+                                            HISTORY_NOTIFY_VISITED_TOPIC,
-+                                            nsnull);
++    mozilla::dom::ContentProcessParent * cpp = 
++      mozilla::dom::ContentProcessParent::GetSingleton();
++    NS_ASSERTION(cpp, "Content Protocol is NULL!");
++    (void) cpp->SendNotifyVisited(IPC::URI(aURI));
 +  }
 +#endif
 +
@@ -327,7 +268,7 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
  
    // Additionally, if we have no observers for this URI, we have nothing to
    // notify about.
-@@ -1061,46 +1078,54 @@ History::VisitURI(nsIURI* aURI,
+@@ -1061,46 +1075,54 @@ History::VisitURI(nsIURI* aURI,
    return NS_OK;
  }
  
