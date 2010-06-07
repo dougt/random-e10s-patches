@@ -1,0 +1,23 @@
+diff --git a/netwerk/protocol/http/HttpChannelParent.cpp b/netwerk/protocol/http/HttpChannelParent.cpp
+--- a/netwerk/protocol/http/HttpChannelParent.cpp
++++ b/netwerk/protocol/http/HttpChannelParent.cpp
+@@ -275,17 +275,18 @@ HttpChannelParent::GetInterface(const ns
+ 
+   // Interface we haven't dealt with yet. Make sure we know by dying.
+   // - use "grep -ri [uuid] ROOT_SRC_DIR" with the uuid from the printf to
+   //   find the offending interface.
+   // - FIXME: make non-fatal before we ship
+   printf("*&*&*& HttpChannelParent::GetInterface: uuid=%s not impl'd yet! "
+          "File a bug!\n", 
+          aIID.ToString());
+-  DROP_DEAD();
++  // DROP_DEAD();
++  return NS_ERROR_NOT_IMPLEMENTED;
+ }
+ 
+ //-----------------------------------------------------------------------------
+ // HttpChannelParent::nsIProgressEventSink
+ //-----------------------------------------------------------------------------
+  
+ NS_IMETHODIMP
+ HttpChannelParent::OnProgress(nsIRequest *aRequest, 
