@@ -3,10 +3,10 @@ NECKO_WORKAROUND_XXX
 
 
 bug_556400_places
-bug_566738_title
 uri_serial
 bug_551181_notify_chrome_about_visit_page
 bug_516728_link_visited
+bug_566738_title
 bug_568925_remote_setTitle
 
 # GFX

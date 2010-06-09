@@ -38,7 +38,7 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
 +    nsCOMPtr<nsIURI> ourURI = uri;
 +    nsCOMPtr<nsIURI> ourReferrer = referrer;
 +    IHistory *history = nsContentUtils::GetHistory(); 
-+    history->VisitURI(ourURI, referrer, flags);
++    history->VisitURI(ourURI, ourReferrer, flags);
 +    return true;
 +}
 +

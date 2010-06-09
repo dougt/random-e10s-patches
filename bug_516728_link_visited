@@ -76,7 +76,7 @@ diff --git a/dom/ipc/ContentProcessChild.h b/dom/ipc/ContentProcessChild.h
 diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
 --- a/dom/ipc/ContentProcessParent.cpp
 +++ b/dom/ipc/ContentProcessParent.cpp
-@@ -35,31 +35,33 @@
+@@ -35,31 +35,34 @@
   * the provisions above, a recipient may use your version of this file under
   * the terms of any one of the MPL, the GPL or the LGPL.
   *
@@ -88,6 +88,7 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
 +#include "History.h"
  #include "mozilla/ipc/TestShellParent.h"
  #include "mozilla/net/NeckoParent.h"
++#include "mozilla/dom/Link.h"
  #include "nsIPrefBranch.h"
  #include "nsIPrefBranch2.h"
  #include "nsIPrefLocalizedString.h"
@@ -110,7 +111,8 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
  #define NS_IPC_IOSERVICE_SET_OFFLINE_TOPIC "ipc:network:set-offline"
  
  ContentProcessParent* ContentProcessParent::gSingleton;
-@@ -394,24 +396,33 @@ ContentProcessParent::RequestRunToComple
+@@ -393,16 +396,82 @@ ContentProcessParent::RequestRunToComple
+ #endif
          mRunToCompletionDepth = 1;
          mShouldCallUnblockChild = true;
      }
@@ -118,16 +120,73 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
  }
  
  
- bool
++class LinkStub : public mozilla::dom::Link
++{
++ public:
++  NS_DECL_ISUPPORTS
++
++  LinkStub(nsIURI* uri)
++    : mozilla::dom::Link(),
++      mURI(uri)
++  {
++  }
++
++  ~LinkStub()
++  {
++      // Asserts in history if we remove while in the enumerator.
++      //
++      //      IHistory *history = nsContentUtils::GetHistory();
++      //      history->UnregisterVisitedCallback(mURI, this);
++  }
++
++  nsLinkState
++  GetLinkState() const
++  {
++    return eLinkState_Unknown;
++  }
++
++  void SetLinkState(nsLinkState aState)
++  {
++      if (aState == eLinkState_Visited) {
++          if (XRE_GetProcessType() == GeckoProcessType_Default) {
++              ContentProcessParent* parent = ContentProcessParent::GetSingleton(false);
++              parent->SendNotifyVisited(IPC::URI(mURI));
++          }
++      }
++      NS_RELEASE_THIS();
++  }
++
++  void ResetLinkState(bool notify)
++  {
++  }
++
++  already_AddRefed<nsIURI> GetURI() const 
++  {
++    return mURI.get();
++  }
++ private:
++  nsCOMPtr<nsIURI> mURI;
++};
++
++NS_IMPL_ISUPPORTS1(LinkStub,
++		   mozilla::dom::Link)
++
++bool
 +ContentProcessParent::RecvStartVisitedQuery(const IPC::URI& aURI)
 +{
 +    nsCOMPtr<nsIURI> newURI = aURI;
-+    IHistory *history = nsContentUtils::GetHistory(); 
-+    history->RegisterVisitedCallback(newURI, nsnull);
++    LinkStub* stub = new LinkStub(newURI);
++    NS_ADDREF(stub);
++
++    IHistory *history = nsContentUtils::GetHistory();
++    nsresult rv = history->RegisterVisitedCallback(newURI, stub);
++    if (NS_FAILED(rv)) {
++        NS_RELEASE(stub);
++    }
 +    return true;
 +}
 +
-+bool
+ bool
  ContentProcessParent::RecvVisitURI(const IPC::URI& uri,
                                     const IPC::URI& referrer,
                                     const PRUint32& flags)
@@ -135,16 +194,6 @@ diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
      nsCOMPtr<nsIURI> ourURI = uri;
      nsCOMPtr<nsIURI> ourReferrer = referrer;
      IHistory *history = nsContentUtils::GetHistory(); 
--    history->VisitURI(ourURI, referrer, flags);
-+    history->VisitURI(ourURI, ourReferrer, flags);
-     return true;
- }
- 
- /* void onDispatchedEvent (in nsIThreadInternal thread); */
- NS_IMETHODIMP
- ContentProcessParent::OnDispatchedEvent(nsIThreadInternal *thread)
- {
-     if (mOldObserver)
 diff --git a/dom/ipc/ContentProcessParent.h b/dom/ipc/ContentProcessParent.h
 --- a/dom/ipc/ContentProcessParent.h
 +++ b/dom/ipc/ContentProcessParent.h
@@ -220,70 +269,36 @@ diff --git a/dom/ipc/PContentProcess.ipdl b/dom/ipc/PContentProcess.ipdl
 diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/places/src/History.cpp
 --- a/toolkit/components/places/src/History.cpp
 +++ b/toolkit/components/places/src/History.cpp
-@@ -37,16 +37,21 @@
-  *
-  * ***** END LICENSE BLOCK ***** */
- 
- #ifdef MOZ_IPC
- #include "mozilla/dom/ContentProcessChild.h"
- #include "nsXULAppAPI.h"
- #endif
- 
-+#ifdef MOZ_IPC
-+#include "mozilla/dom/ContentProcessChild.h"
-+#include "mozilla/dom/ContentProcessParent.h"
-+#endif
-+
- #include "History.h"
- #include "nsNavHistory.h"
- #include "nsNavBookmarks.h"
- #include "Helpers.h"
- 
- #include "mozilla/storage.h"
- #include "mozilla/dom/Link.h"
- #include "nsDocShellCID.h"
-@@ -891,16 +896,25 @@ History::CurrentTaskFinished()
-   StartNextTask();
- }
- 
- void
- History::NotifyVisited(nsIURI* aURI)
+@@ -155,16 +155,28 @@ class VisitedQuery : public mozIStorageS
  {
-   NS_ASSERTION(aURI, "Ruh-roh!  A NULL URI was passed to us!");
+ public:
+   NS_DECL_ISUPPORTS
+ 
+   static nsresult Start(nsIURI* aURI)
+   {
+     NS_PRECONDITION(aURI, "Null URI");
  
 +#ifdef MOZ_IPC
-+  if (XRE_GetProcessType() == GeckoProcessType_Default) {
-+    mozilla::dom::ContentProcessParent * cpp = 
-+      mozilla::dom::ContentProcessParent::GetSingleton();
-+    NS_ASSERTION(cpp, "Content Protocol is NULL!");
-+    (void) cpp->SendNotifyVisited(IPC::URI(aURI));
++  // If we are a content process, always remote the request to the
++  // parent process.
++  if (XRE_GetProcessType() == GeckoProcessType_Content) {
++    mozilla::dom::ContentProcessChild * cpc = 
++      mozilla::dom::ContentProcessChild::GetSingleton();
++    NS_ASSERTION(cpc, "Content Protocol is NULL!");
++    (void)cpc->SendStartVisitedQuery(IPC::URI(aURI));
++    return NS_OK;
 +  }
 +#endif
 +
-   // If the hash table has not been initialized, then we have nothing to notify
-   // about.
-   if (!mObservers.IsInitialized()) {
-     return;
-   }
+     nsNavHistory* navHist = nsNavHistory::GetHistoryService();
+     NS_ENSURE_TRUE(navHist, NS_ERROR_FAILURE);
+     mozIStorageStatement* stmt = navHist->GetStatementById(DB_IS_PAGE_VISITED);
+     NS_ENSURE_STATE(stmt);
  
-   // Additionally, if we have no observers for this URI, we have nothing to
-   // notify about.
-@@ -1061,46 +1075,54 @@ History::VisitURI(nsIURI* aURI,
-   return NS_OK;
- }
- 
- NS_IMETHODIMP
- History::RegisterVisitedCallback(nsIURI* aURI,
-                                  Link* aLink)
- {
-   NS_ASSERTION(aURI, "Must pass a non-null URI!");
--  NS_ASSERTION(aLink, "Must pass a non-null Link object!");
- 
-   // First, ensure that our hash table is setup.
-   if (!mObservers.IsInitialized()) {
-     NS_ENSURE_TRUE(mObservers.Init(), NS_ERROR_OUT_OF_MEMORY);
-   }
- 
+     // Bind by index for performance.
+     nsresult rv = URIBinder::Bind(stmt, 0, aURI);
+     NS_ENSURE_SUCCESS(rv, rv);
+@@ -933,17 +945,18 @@ History::RegisterVisitedCallback(nsIURI*
    // Obtain our array of observers for this URI.
  #ifdef DEBUG
    bool keyAlreadyExists = !!mObservers.GetEntry(aURI);
@@ -293,49 +308,16 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
    ObserverArray& observers = key->array;
  
 -  if (observers.IsEmpty()) {
--    NS_ASSERTION(!keyAlreadyExists,
--                 "An empty key was kept around in our hashtable!");
-+  nsresult rv = NS_OK;
-+#ifdef MOZ_IPC
-+  // If we are a content process, always remote the request to the
-+  // parent process.
-+  if (XRE_GetProcessType() == GeckoProcessType_Content) {
-+    mozilla::dom::ContentProcessChild * cpc = 
-+      mozilla::dom::ContentProcessChild::GetSingleton();
-+    NS_ASSERTION(cpc, "Content Protocol is NULL!");
-+    cpc->SendStartVisitedQuery(IPC::URI(aURI));
-+  }
-+  else
-+#endif
-+  rv = VisitedQuery::Start(aURI);
++  // xxx, any idea of why i have to force this?
++  if (true || observers.IsEmpty()) {
+     NS_ASSERTION(!keyAlreadyExists,
+                  "An empty key was kept around in our hashtable!");
  
--    // We are the first Link node to ask about this URI, or there are no pending
--    // Links wanting to know about this URI.  Therefore, we should query the
--    // database now.
--    nsresult rv = VisitedQuery::Start(aURI);
--    if (NS_FAILED(rv)) {
--      // Remove our array from the hashtable so we don't keep it around.
--      mObservers.RemoveEntry(aURI);
--      return rv;
--    }
-+  if (NS_FAILED(rv)) {
-+    // Remove our array from the hashtable so we don't keep it around.
-+    mObservers.RemoveEntry(aURI);
-+    return rv;
-   }
- 
-+  // We are done.
-+  if (!aLink)
-+    return NS_OK;
-+
-   // Sanity check that Links are not registered more than once for a given URI.
-   // This will not catch a case where it is registered for two different URIs.
-   NS_ASSERTION(!observers.Contains(aLink),
-                "Already tracking this Link object!");
- 
-   // Start tracking our Link.
-   if (!observers.AppendElement(aLink)) {
-     // Curses - unregister and return failure.
+     // We are the first Link node to ask about this URI, or there are no pending
+     // Links wanting to know about this URI.  Therefore, we should query the
+     // database now.
+     nsresult rv = VisitedQuery::Start(aURI);
+     if (NS_FAILED(rv)) {
 diff --git a/toolkit/components/places/src/Makefile.in b/toolkit/components/places/src/Makefile.in
 --- a/toolkit/components/places/src/Makefile.in
 +++ b/toolkit/components/places/src/Makefile.in
