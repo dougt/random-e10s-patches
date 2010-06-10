@@ -30,7 +30,7 @@ diff --git a/docshell/base/IHistory.h b/docshell/base/IHistory.h
       *
       * @pre aURI must not be null.
 -     * @pre aLink must not be null.
-+     * @pre aLink may be null only in the MOZ_IPC parent process
++     * @pre aLink may be null only in the MOZ_IPC parent process.
       *
       * @param aURI
       *        The URI to check.
@@ -325,7 +325,7 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
  
    // Additionally, if we have no observers for this URI, we have nothing to
    // notify about.
-@@ -918,45 +940,48 @@ History::VisitURI(nsIURI* aURI,
+@@ -918,17 +940,24 @@ History::VisitURI(nsIURI* aURI,
    return NS_OK;
  }
  
@@ -337,9 +337,12 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
 -  NS_ASSERTION(aLink, "Must pass a non-null Link object!");
 +#ifdef MOZ_IPC
 +  if (XRE_GetProcessType() == GeckoProcessType_Content) {
-+    NS_ASSERTION(aLink, "Must pass a non-null URI!");
++    NS_PRECONDITION(aLink, "Must pass a non-null URI!");
 +  }
++#else
++  NS_PRECONDITION(aLink, "Must pass a non-null URI!");
 +#endif
++
  
    // First, ensure that our hash table is setup.
    if (!mObservers.IsInitialized()) {
@@ -348,46 +351,25 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
  
    // Obtain our array of observers for this URI.
  #ifdef DEBUG
-   bool keyAlreadyExists = !!mObservers.GetEntry(aURI);
- #endif
-   KeyClass* key = mObservers.PutEntry(aURI);
-   NS_ENSURE_TRUE(key, NS_ERROR_OUT_OF_MEMORY);
-   ObserverArray& observers = key->array;
+@@ -941,17 +970,17 @@ History::RegisterVisitedCallback(nsIURI*
+   if (observers.IsEmpty()) {
+     NS_ASSERTION(!keyAlreadyExists,
+                  "An empty key was kept around in our hashtable!");
  
--  if (observers.IsEmpty()) {
--    NS_ASSERTION(!keyAlreadyExists,
--                 "An empty key was kept around in our hashtable!");
-+  // We are the first Link node to ask about this URI, or there are no pending
-+  // Links wanting to know about this URI.  Therefore, we should query the
-+  // database now.
-+  nsresult rv = VisitedQuery::Start(aURI);
-+  if (NS_FAILED(rv)) {
-+    // Remove our array from the hashtable so we don't keep it around.
-+    mObservers.RemoveEntry(aURI);
-+    return rv;
-+  }
- 
--    // We are the first Link node to ask about this URI, or there are no pending
--    // Links wanting to know about this URI.  Therefore, we should query the
--    // database now.
--    nsresult rv = VisitedQuery::Start(aURI);
+     // We are the first Link node to ask about this URI, or there are no pending
+     // Links wanting to know about this URI.  Therefore, we should query the
+     // database now.
+     nsresult rv = VisitedQuery::Start(aURI);
 -    if (NS_FAILED(rv)) {
--      // Remove our array from the hashtable so we don't keep it around.
--      mObservers.RemoveEntry(aURI);
--      return rv;
--    }
--  }
-+  // We are done.
-+  if (!aLink)
-+    return NS_OK;
++    if (NS_FAILED(rv) || !aLink) {
+       // Remove our array from the hashtable so we don't keep it around.
+       mObservers.RemoveEntry(aURI);
+       return rv;
+     }
+   }
  
    // Sanity check that Links are not registered more than once for a given URI.
    // This will not catch a case where it is registered for two different URIs.
-   NS_ASSERTION(!observers.Contains(aLink),
-                "Already tracking this Link object!");
- 
-   // Start tracking our Link.
-   if (!observers.AppendElement(aLink)) {
 diff --git a/toolkit/components/places/src/Makefile.in b/toolkit/components/places/src/Makefile.in
 --- a/toolkit/components/places/src/Makefile.in
 +++ b/toolkit/components/places/src/Makefile.in
