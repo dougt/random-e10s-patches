@@ -10,9 +10,8 @@ bug_566738_title
 bug_568925_remote_setTitle
 
 # GFX
-bug_545632_16bpp
-bug_545632_16bpp_qt
-bug_xxxxxx_gfx_image_16bpp_enabler
+bug_545632_cairo_16_upstream
+bug_545632_16_enabler
 
 # necko
 # bug_536289_ftp

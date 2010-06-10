@@ -1,0 +1,354 @@
+diff --git a/gfx/layers/basic/BasicImages.cpp b/gfx/layers/basic/BasicImages.cpp
+--- a/gfx/layers/basic/BasicImages.cpp
++++ b/gfx/layers/basic/BasicImages.cpp
+@@ -183,17 +183,17 @@ BasicPlanarYCbCrImage::GetAsSurface()
+     return result.forget();
+   }
+ 
+   if (!mBuffer) {
+     return nsnull;
+   }
+   nsRefPtr<gfxImageSurface> imgSurface =
+       new gfxImageSurface(mBuffer, mSize,
+-                          mSize.width * 4,
++                          mSize.width * gfxASurface::BytePerPixelFromFormat(gfxASurface::ImageFormatRGB24),
+                           gfxASurface::ImageFormatRGB24);
+   if (!imgSurface) {
+     return nsnull;
+   }
+ 
+   // Pass ownership of the buffer to the surface
+   imgSurface->SetData(&imageSurfaceDataKey, mBuffer.forget(), DestroyBuffer);
+ 
+diff --git a/gfx/thebes/public/gfxASurface.h b/gfx/thebes/public/gfxASurface.h
+--- a/gfx/thebes/public/gfxASurface.h
++++ b/gfx/thebes/public/gfxASurface.h
+@@ -63,16 +63,17 @@ public:
+      * The format for an image surface. For all formats with alpha data, 0
+      * means transparent, 1 or 255 means fully opaque.
+      */
+     typedef enum {
+         ImageFormatARGB32, ///< ARGB data in native endianness, using premultiplied alpha
+         ImageFormatRGB24,  ///< xRGB data in native endianness
+         ImageFormatA8,     ///< Only an alpha channel
+         ImageFormatA1,     ///< Packed transparency information (one byte refers to 8 pixels)
++        ImageFormatRGB16_565,  ///< RGB_565 data in native endianness
+         ImageFormatUnknown
+     } gfxImageFormat;
+ 
+     typedef enum {
+         SurfaceTypeImage,
+         SurfaceTypePDF,
+         SurfaceTypePS,
+         SurfaceTypeXlib,
+@@ -182,16 +183,18 @@ public:
+      * in which case the value that was recorded for this surface will
+      * be freed.
+      */
+     void RecordMemoryUsed(PRInt32 aBytes);
+     void RecordMemoryFreed();
+ 
+     PRInt32 KnownMemoryUsed() { return mBytesRecorded; }
+ 
++    static PRInt32 BytePerPixelFromFormat(gfxImageFormat format);
++
+ protected:
+     gfxASurface() : mSurface(nsnull), mFloatingRefs(0), mBytesRecorded(0), mSurfaceValid(PR_FALSE) { }
+ 
+     static gfxASurface* GetSurfaceWrapper(cairo_surface_t *csurf);
+     static void SetSurfaceWrapper(cairo_surface_t *csurf, gfxASurface *asurf);
+ 
+     void Init(cairo_surface_t *surface, PRBool existingSurface = PR_FALSE);
+ 
+diff --git a/gfx/thebes/src/gfxASurface.cpp b/gfx/thebes/src/gfxASurface.cpp
+--- a/gfx/thebes/src/gfxASurface.cpp
++++ b/gfx/thebes/src/gfxASurface.cpp
+@@ -401,27 +401,45 @@ gfxASurface::EndPage()
+ 
+ gfxASurface::gfxContentType
+ gfxASurface::ContentFromFormat(gfxImageFormat format)
+ {
+     switch (format) {
+         case ImageFormatARGB32:
+             return CONTENT_COLOR_ALPHA;
+         case ImageFormatRGB24:
++        case ImageFormatRGB16_565:
+             return CONTENT_COLOR;
+         case ImageFormatA8:
+         case ImageFormatA1:
+             return CONTENT_ALPHA;
+ 
+         case ImageFormatUnknown:
+         default:
+             return CONTENT_COLOR;
+     }
+ }
+ 
++PRInt32
++gfxASurface::BytePerPixelFromFormat(gfxImageFormat format)
++{
++    switch (format) {
++        case ImageFormatARGB32:
++        case ImageFormatRGB24:
++            return 4;
++        case ImageFormatRGB16_565:
++            return 2;
++        case ImageFormatA8:
++            return 1;
++        default:
++            NS_WARNING("Unknown byte per pixel value for Image format");
++    }
++    return 0;
++}
++
+ /** Memory reporting **/
+ 
+ static const char *sSurfaceNamesForSurfaceType[] = {
+     "gfx/surface/image",
+     "gfx/surface/pdf",
+     "gfx/surface/ps",
+     "gfx/surface/xlib",
+     "gfx/surface/xcb",
+diff --git a/gfx/thebes/src/gfxImageSurface.cpp b/gfx/thebes/src/gfxImageSurface.cpp
+--- a/gfx/thebes/src/gfxImageSurface.cpp
++++ b/gfx/thebes/src/gfxImageSurface.cpp
+@@ -141,16 +141,18 @@ long
+ gfxImageSurface::ComputeStride() const
+ {
+     long stride;
+ 
+     if (mFormat == ImageFormatARGB32)
+         stride = mSize.width * 4;
+     else if (mFormat == ImageFormatRGB24)
+         stride = mSize.width * 4;
++    else if (mFormat == ImageFormatRGB16_565)
++        stride = mSize.width * 2;
+     else if (mFormat == ImageFormatA8)
+         stride = mSize.width;
+     else if (mFormat == ImageFormatA1) {
+         stride = (mSize.width + 7) / 8;
+     } else {
+         NS_WARNING("Unknown format specified to gfxImageSurface!");
+         stride = mSize.width * 4;
+     }
+diff --git a/gfx/thebes/src/gfxPlatformGtk.cpp b/gfx/thebes/src/gfxPlatformGtk.cpp
+--- a/gfx/thebes/src/gfxPlatformGtk.cpp
++++ b/gfx/thebes/src/gfxPlatformGtk.cpp
+@@ -166,49 +166,31 @@ gfxPlatformGtk::CreateOffscreenSurface(c
+     nsRefPtr<gfxASurface> newSurface = nsnull;
+     PRBool sizeOk = PR_TRUE;
+ 
+     if (size.width >= GDK_PIXMAP_SIZE_MAX ||
+         size.height >= GDK_PIXMAP_SIZE_MAX)
+         sizeOk = PR_FALSE;
+ 
+ #ifdef MOZ_X11
+-    int glitzf;
+-    int xrenderFormatID;
+-    switch (imageFormat) {
+-        case gfxASurface::ImageFormatARGB32:
+-            glitzf = 0; // GLITZ_STANDARD_ARGB32;
+-            xrenderFormatID = PictStandardARGB32;
+-            break;
+-        case gfxASurface::ImageFormatRGB24:
+-            glitzf = 1; // GLITZ_STANDARD_RGB24;
+-            xrenderFormatID = PictStandardRGB24;
+-            break;
+-        case gfxASurface::ImageFormatA8:
+-            glitzf = 2; // GLITZ_STANDARD_A8;
+-            xrenderFormatID = PictStandardA8;
+-            break;
+-        case gfxASurface::ImageFormatA1:
+-            glitzf = 3; // GLITZ_STANDARD_A1;
+-            xrenderFormatID = PictStandardA1;
+-            break;
+-        default:
+-            return nsnull;
+-    }
+-
+     // XXX we really need a different interface here, something that passes
+     // in more context, including the display and/or target surface type that
+     // we should try to match
+     Display* display = GDK_DISPLAY();
+     if (!display)
+         return nsnull;
+ 
+     GdkPixmap* pixmap = nsnull;
++    // try to optimize it for 16bpp default screen
++    if (gfxASurface::ImageFormatRGB24 == imageFormat
++        && 16 == gdk_visual_get_system()->depth)
++        imageFormat = gfxASurface::ImageFormatRGB16_565;
++
+     XRenderPictFormat* xrenderFormat =
+-        XRenderFindStandardFormat(display, xrenderFormatID);
++        gfxXlibSurface::FindRenderFormat(display, imageFormat);
+ 
+     if (xrenderFormat && sizeOk) {
+         pixmap = gdk_pixmap_new(nsnull, size.width, size.height,
+                                 xrenderFormat->depth);
+ 
+         if (pixmap) {
+             gdk_drawable_set_colormap(GDK_DRAWABLE(pixmap), nsnull);
+             newSurface = new gfxXlibSurface(display,
+diff --git a/gfx/thebes/src/gfxQtPlatform.cpp b/gfx/thebes/src/gfxQtPlatform.cpp
+--- a/gfx/thebes/src/gfxQtPlatform.cpp
++++ b/gfx/thebes/src/gfxQtPlatform.cpp
+@@ -189,51 +189,35 @@ gfxQtPlatform::~gfxQtPlatform()
+ }
+ 
+ already_AddRefed<gfxASurface>
+ gfxQtPlatform::CreateOffscreenSurface(const gfxIntSize& size,
+                                       gfxASurface::gfxImageFormat imageFormat)
+ {
+     nsRefPtr<gfxASurface> newSurface = nsnull;
+ 
++    // try to optimize it for 16bpp screen
++    if (gfxASurface::ImageFormatRGB24 == imageFormat
++        && 16 == QX11Info().depth())
++        imageFormat = gfxASurface::ImageFormatRGB16_565;
++
+     if (mRenderMode == RENDER_QPAINTER) {
+       newSurface = new gfxQPainterSurface(size, gfxASurface::ContentFromFormat(imageFormat));
+       return newSurface.forget();
+     }
+ 
+     if (mRenderMode == RENDER_BUFFERED &&
+         sDefaultQtPaintEngineType != QPaintEngine::X11) {
+       newSurface = new gfxImageSurface(size, imageFormat);
+       return newSurface.forget();
+     }
+ 
+ #ifdef MOZ_X11
+-    int xrenderFormatID = -1;
+-    switch (imageFormat) {
+-        case gfxASurface::ImageFormatARGB32:
+-            xrenderFormatID = PictStandardARGB32;
+-            break;
+-        case gfxASurface::ImageFormatRGB24:
+-            xrenderFormatID = PictStandardRGB24;
+-            break;
+-        case gfxASurface::ImageFormatA8:
+-            xrenderFormatID = PictStandardA8;
+-            break;
+-        case gfxASurface::ImageFormatA1:
+-            xrenderFormatID = PictStandardA1;
+-            break;
+-        default:
+-            return nsnull;
+-    }
+-
+-    // XXX we really need a different interface here, something that passes
+-    // in more context, including the display and/or target surface type that
+-    // we should try to match
+     XRenderPictFormat* xrenderFormat =
+-        XRenderFindStandardFormat(QX11Info().display(), xrenderFormatID);
++        gfxXlibSurface::FindRenderFormat(QX11Info().display(), imageFormat);
+ 
+     newSurface = new gfxXlibSurface((Display*)QX11Info().display(),
+                                     xrenderFormat,
+                                     size);
+ #endif
+ 
+     if (newSurface) {
+         gfxContext ctx(newSurface);
+diff --git a/gfx/thebes/src/gfxXlibSurface.cpp b/gfx/thebes/src/gfxXlibSurface.cpp
+--- a/gfx/thebes/src/gfxXlibSurface.cpp
++++ b/gfx/thebes/src/gfxXlibSurface.cpp
+@@ -153,16 +153,38 @@ gfxXlibSurface::FindRenderFormat(Display
+ {
+     switch (format) {
+         case ImageFormatARGB32:
+             return XRenderFindStandardFormat (dpy, PictStandardARGB32);
+             break;
+         case ImageFormatRGB24:
+             return XRenderFindStandardFormat (dpy, PictStandardRGB24);
+             break;
++        case ImageFormatRGB16_565: {
++            // PictStandardRGB16_565 is not standard Xrender format
++            // we should try to find related visual
++            // and find xrender format by visual
++            Visual *visual = NULL;
++            Screen *screen = DefaultScreenOfDisplay(dpy);
++            int j;
++            for (j = 0; j < screen->ndepths; j++) {
++                Depth *d = &screen->depths[j];
++                if (d->depth == 16 && d->nvisuals && &d->visuals[0]) {
++                    if (d->visuals[0].red_mask   == 0xf800 &&
++                        d->visuals[0].green_mask == 0x7e0 &&
++                        d->visuals[0].blue_mask  == 0x1f)
++                        visual = &d->visuals[0];
++                    break;
++                }
++            }
++            if (!visual)
++                return NULL;
++            return XRenderFindVisualFormat(dpy, visual);
++            break;
++        }
+         case ImageFormatA8:
+             return XRenderFindStandardFormat (dpy, PictStandardA8);
+             break;
+         case ImageFormatA1:
+             return XRenderFindStandardFormat (dpy, PictStandardA1);
+             break;
+         default:
+             return NULL;
+diff --git a/widget/src/qt/nsNativeThemeQt.cpp b/widget/src/qt/nsNativeThemeQt.cpp
+--- a/widget/src/qt/nsNativeThemeQt.cpp
++++ b/widget/src/qt/nsNativeThemeQt.cpp
+@@ -100,16 +100,18 @@ static inline QRect qRectInPixels(const 
+ static inline QImage::Format
+ _qimage_from_gfximage_format (gfxASurface::gfxImageFormat aFormat)
+ {
+     switch (aFormat) {
+     case gfxASurface::ImageFormatARGB32:
+         return QImage::Format_ARGB32_Premultiplied;
+     case gfxASurface::ImageFormatRGB24:
+         return QImage::Format_RGB32;
++    case gfxASurface::ImageFormatRGB16_565:
++        return QImage::Format_RGB16;
+     case gfxASurface::ImageFormatA8:
+         return QImage::Format_Indexed8;
+     case gfxASurface::ImageFormatA1:
+ #ifdef WORDS_BIGENDIAN
+         return QImage::Format_Mono;
+ #else
+         return QImage::Format_MonoLSB;
+ #endif
+diff --git a/widget/src/qt/nsWindow.cpp b/widget/src/qt/nsWindow.cpp
+--- a/widget/src/qt/nsWindow.cpp
++++ b/widget/src/qt/nsWindow.cpp
+@@ -213,28 +213,33 @@ nsWindow::nsWindow()
+ static inline gfxASurface::gfxImageFormat
+ _depth_to_gfximage_format(PRInt32 aDepth)
+ {
+     switch (aDepth) {
+     case 32:
+         return gfxASurface::ImageFormatARGB32;
+     case 24:
+         return gfxASurface::ImageFormatRGB24;
++    case 16:
++        return gfxASurface::ImageFormatRGB16_565;
+     default:
+         return gfxASurface::ImageFormatUnknown;
+     }
+ }
+ 
+ static inline QImage::Format
+ _gfximage_to_qformat(gfxASurface::gfxImageFormat aFormat)
+ {
+     switch (aFormat) {
+     case gfxASurface::ImageFormatARGB32:
++        return QImage::Format_ARGB32_Premultiplied;
+     case gfxASurface::ImageFormatRGB24:
+         return QImage::Format_ARGB32;
++    case gfxASurface::ImageFormatRGB16_565:
++        return QImage::Format_RGB16;
+     default:
+         return QImage::Format_Invalid;
+     }
+ }
+ 
+ static void
+ FreeOffScreenBuffers(void)
+ {

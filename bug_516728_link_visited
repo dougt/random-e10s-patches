@@ -1,3 +1,8 @@
+# HG changeset patch
+# User Doug Turner <dougt@dougt.org>
+
+Bug 516728 - Remote link-visited information. r=sdwilsh, sr=bz
+
 diff --git a/docshell/base/IHistory.h b/docshell/base/IHistory.h
 --- a/docshell/base/IHistory.h
 +++ b/docshell/base/IHistory.h

@@ -1,3 +1,8 @@
+# HG changeset patch
+# User Doug Turner <dougt@dougt.org>
+
+Bug 568925 - Remote History Set Title for URI. r=chris.jones
+
 diff --git a/dom/ipc/ContentProcessParent.cpp b/dom/ipc/ContentProcessParent.cpp
 --- a/dom/ipc/ContentProcessParent.cpp
 +++ b/dom/ipc/ContentProcessParent.cpp
@@ -159,7 +164,7 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
  #include "mozilla/storage.h"
  #include "mozilla/dom/Link.h"
  #include "nsDocShellCID.h"
-@@ -963,16 +968,26 @@ History::StartNextTask()
+@@ -820,16 +825,26 @@ History::StartNextTask()
  
  NS_IMETHODIMP
  History::VisitURI(nsIURI* aURI,

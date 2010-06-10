@@ -76,7 +76,7 @@ diff --git a/dom/ipc/PContentProcess.ipdl b/dom/ipc/PContentProcess.ipdl
 diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/places/src/History.cpp
 --- a/toolkit/components/places/src/History.cpp
 +++ b/toolkit/components/places/src/History.cpp
-@@ -1162,18 +1162,28 @@ History::UnregisterVisitedCallback(nsIUR
+@@ -1162,18 +1162,27 @@ History::UnregisterVisitedCallback(nsIUR
  
    return NS_OK;
  }
@@ -87,16 +87,15 @@ diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/plac
    NS_PRECONDITION(aURI, "Must pass a non-null URI!");
 +#ifdef MOZ_IPC
 +  if (XRE_GetProcessType() == GeckoProcessType_Content) {
-+    mozilla::dom::ContentProcessChild * cpc = 
++    mozilla::dom::ContentProcessChild* cpc = 
 +      mozilla::dom::ContentProcessChild::GetSingleton();
 +    NS_ASSERTION(cpc, "Content Protocol is NULL!");
-+    (void) cpc->SendSetURITitle(IPC::URI(aURI), aTitle);
++    (void)cpc->SendSetURITitle(IPC::URI(aURI), aTitle);
 +    return NS_OK;
 +  } 
 +#endif /* MOZ_IPC */
  
    nsNavHistory* history = nsNavHistory::GetHistoryService();
-+
    PRBool canAdd;
    nsresult rv = history->CanAddURI(aURI, &canAdd);
    NS_ENSURE_SUCCESS(rv, rv);
