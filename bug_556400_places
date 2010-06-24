@@ -1,5 +1,6 @@
---- a/docshell/base/IHistory.h	
-+++ a/docshell/base/IHistory.h	
+diff --git a/docshell/base/IHistory.h b/docshell/base/IHistory.h
+--- a/docshell/base/IHistory.h
++++ b/docshell/base/IHistory.h
 @@ -46,17 +46,17 @@ class nsIURI;
  
  namespace mozilla {
@@ -77,9 +78,10 @@
  } // namespace mozilla
  
  #endif // mozilla_IHistory_h_
---- a/docshell/base/nsDocShell.cpp	
-+++ a/docshell/base/nsDocShell.cpp	
-@@ -106,16 +106,17 @@ 
+diff --git a/docshell/base/nsDocShell.cpp b/docshell/base/nsDocShell.cpp
+--- a/docshell/base/nsDocShell.cpp
++++ b/docshell/base/nsDocShell.cpp
+@@ -107,16 +107,17 @@
  #include "nsDOMJSUtils.h"
  #include "nsIInterfaceRequestorUtils.h"
  #include "nsIView.h"
@@ -97,7 +99,7 @@
  
  
  // Local Includes
-@@ -666,16 +667,17 @@ static nsISHEntry* GetRootSHEntry(nsISHE
+@@ -668,16 +669,17 @@ static nsISHEntry* GetRootSHEntry(nsISHE
  //*****************************************************************************
  //***    nsDocShell: Object Management
  //*****************************************************************************
@@ -115,7 +117,7 @@
      mAppType(nsIDocShell::APP_TYPE_UNKNOWN),
      mMarginWidth(-1),
      mMarginHeight(-1),
-@@ -5656,42 +5658,44 @@ nsDocShell::OnRedirectStateChange(nsICha
+@@ -5667,42 +5669,44 @@ nsDocShell::OnRedirectStateChange(nsICha
                                    PRUint32 aRedirectFlags,
                                    PRUint32 aStateFlags)
  {
@@ -180,7 +182,7 @@
          mLoadType = LOAD_NORMAL_REPLACE;
          SetHistoryEntry(&mLSHE, nsnull);
      }
-@@ -8925,25 +8929,29 @@ nsDocShell::OnNewURI(nsIURI * aURI, nsIC
+@@ -8924,25 +8928,29 @@ nsDocShell::OnNewURI(nsIURI * aURI, nsIC
              chanName.AssignLiteral("<no channel>");
  
          PR_LOG(gDocShellLog, PR_LOG_DEBUG,
@@ -212,7 +214,7 @@
          if (httpChannel) {
              nsCOMPtr<nsIUploadChannel> uploadChannel(do_QueryInterface(httpChannel));
              if (uploadChannel) {
-@@ -9023,18 +9031,18 @@ nsDocShell::OnNewURI(nsIURI * aURI, nsIC
+@@ -9022,18 +9030,18 @@ nsDocShell::OnNewURI(nsIURI * aURI, nsIC
          (aLoadType == LOAD_RELOAD_BYPASS_CACHE ||
           aLoadType == LOAD_RELOAD_BYPASS_PROXY ||
           aLoadType == LOAD_RELOAD_BYPASS_PROXY_AND_CACHE)) {
@@ -233,7 +235,7 @@
              mLSHE->SetCacheKey(cacheKey);
          else if (mOSHE)
              mOSHE->SetCacheKey(cacheKey);
-@@ -9046,20 +9054,32 @@ nsDocShell::OnNewURI(nsIURI * aURI, nsIC
+@@ -9045,20 +9053,32 @@ nsDocShell::OnNewURI(nsIURI * aURI, nsIC
              /* This is  a fresh page getting loaded for the first time
               *.Create a Entry for it and add it to SH, if this is the
               * rootDocShell
@@ -269,7 +271,7 @@
      if (rootSH && (mLoadType & LOAD_CMD_HISTORY)) {
          nsCOMPtr<nsISHistoryInternal> shInternal(do_QueryInterface(rootSH));
          if (shInternal) {
-@@ -9368,17 +9388,17 @@ nsDocShell::AddState(nsIVariant *aData, 
+@@ -9367,17 +9387,17 @@ nsDocShell::AddState(nsIVariant *aData, 
      // We need to call FireOnLocationChange so that the browser's address bar
      // gets updated and the back button is enabled, but we only need to
      // explicitly call FireOnLocationChange if we're not calling SetCurrentURI,
@@ -288,7 +290,7 @@
      // Try to set the title of the current history element
      if (mOSHE)
          mOSHE->SetTitle(aTitle);
-@@ -10070,62 +10090,117 @@ NS_IMETHODIMP nsDocShell::MakeEditable(P
+@@ -10064,62 +10084,117 @@ NS_IMETHODIMP nsDocShell::MakeEditable(P
  {
    nsresult rv = EnsureEditorData();
    if (NS_FAILED(rv)) return rv;
@@ -451,8 +453,9 @@
  
  NS_IMETHODIMP
  nsDocShell::SetLoadType(PRUint32 aLoadType)
---- a/docshell/base/nsDocShell.h	
-+++ a/docshell/base/nsDocShell.h	
+diff --git a/docshell/base/nsDocShell.h b/docshell/base/nsDocShell.h
+--- a/docshell/base/nsDocShell.h
++++ b/docshell/base/nsDocShell.h
 @@ -428,22 +428,38 @@ protected:
  
      // overridden from nsDocLoader, this provides more information than the
@@ -539,8 +542,9 @@
      PRInt32                    mLoadedTransIndex;
  
      PRPackedBool               mAllowSubframes;
---- a/toolkit/components/places/src/Helpers.cpp	
-+++ a/toolkit/components/places/src/Helpers.cpp	
+diff --git a/toolkit/components/places/src/Helpers.cpp b/toolkit/components/places/src/Helpers.cpp
+--- a/toolkit/components/places/src/Helpers.cpp
++++ b/toolkit/components/places/src/Helpers.cpp
 @@ -55,17 +55,17 @@ AsyncStatementCallback::HandleError(mozI
    nsresult rv = aError->GetResult(&result);
    NS_ENSURE_SUCCESS(rv, rv);
@@ -599,8 +603,9 @@
  
  } // namespace places
  } // namespace mozilla
---- a/toolkit/components/places/src/Helpers.h	
-+++ a/toolkit/components/places/src/Helpers.h	
+diff --git a/toolkit/components/places/src/Helpers.h b/toolkit/components/places/src/Helpers.h
+--- a/toolkit/components/places/src/Helpers.h
++++ b/toolkit/components/places/src/Helpers.h
 @@ -131,13 +131,51 @@ public:
                         const nsACString& aName,
                         nsIURI* aURI);
@@ -653,9 +658,10 @@
  } // namespace mozilla
  
  #endif // mozilla_places_Helpers_h_
---- a/toolkit/components/places/src/History.cpp	
-+++ a/toolkit/components/places/src/History.cpp	
-@@ -34,16 +34,17 @@ 
+diff --git a/toolkit/components/places/src/History.cpp b/toolkit/components/places/src/History.cpp
+--- a/toolkit/components/places/src/History.cpp
++++ b/toolkit/components/places/src/History.cpp
+@@ -34,16 +34,17 @@
   * and other provisions required by the GPL or the LGPL. If you do not delete
   * the provisions above, a recipient may use your version of this file under
   * the terms of any one of the MPL, the GPL or the LGPL.
@@ -1456,9 +1462,10 @@
  
  } // namespace places
  } // namespace mozilla
---- a/toolkit/components/places/src/History.h	
-+++ a/toolkit/components/places/src/History.h	
-@@ -41,16 +41,17 @@ 
+diff --git a/toolkit/components/places/src/History.h b/toolkit/components/places/src/History.h
+--- a/toolkit/components/places/src/History.h
++++ b/toolkit/components/places/src/History.h
+@@ -41,16 +41,17 @@
  #define mozilla_places_History_h_
  
  #include "mozilla/IHistory.h"
@@ -1546,9 +1553,10 @@
    {
    public:
      KeyClass(const nsIURI *aURI)
---- a/toolkit/components/places/src/nsNavHistory.cpp	
-+++ a/toolkit/components/places/src/nsNavHistory.cpp	
-@@ -83,21 +83,16 @@ 
+diff --git a/toolkit/components/places/src/nsNavHistory.cpp b/toolkit/components/places/src/nsNavHistory.cpp
+--- a/toolkit/components/places/src/nsNavHistory.cpp
++++ b/toolkit/components/places/src/nsNavHistory.cpp
+@@ -83,21 +83,16 @@
  
  #ifdef MOZ_XUL
  #include "nsIAutoCompleteInput.h"
@@ -1693,7 +1701,7 @@
        "SELECT ROUND(( "
          "strftime('%s','now','localtime','utc') - "
          "( "
-@@ -2853,24 +2879,21 @@ nsNavHistory::AddVisit(nsIURI* aURI, PRT
+@@ -2861,22 +2887,19 @@ nsNavHistory::AddVisit(nsIURI* aURI, PRT
    // important to notify the observers below.
    nsNavBookmarks *bs = nsNavBookmarks::GetBookmarksService();
    NS_ENSURE_TRUE(bs, NS_ERROR_OUT_OF_MEMORY);
@@ -1703,9 +1711,7 @@
    // GetQueryResults to maintain consistency.
    // FIXME bug 325241: make a way to observe hidden URLs
 -  PRUint32 added = 0;
-   if (!hidden && aTransitionType != TRANSITION_EMBED &&
-                  aTransitionType != TRANSITION_FRAMED_LINK &&
-                  aTransitionType != TRANSITION_DOWNLOAD) {
+   if (!hidden) {
 -    NOTIFY_OBSERVERS(mCanNotify, mCacheObservers, mObservers,
 -                     nsINavHistoryObserver,
 -                     OnVisit(aURI, *aVisitID, aTime, aSessionID,
@@ -1720,7 +1726,7 @@
    // (since we implement nsIDownloadHistory) this will not happen and we need to
    // send it ourselves.
    if (newItem && (aIsRedirect || aTransitionType == TRANSITION_DOWNLOAD)) {
-@@ -7476,62 +7499,16 @@ nsNavHistory::RemoveDuplicateURIs()
+@@ -7542,62 +7565,16 @@ nsNavHistory::RemoveDuplicateURIs()
    rv = transaction.Commit();
    NS_ENSURE_SUCCESS(rv, rv);
    return NS_OK;
@@ -1783,9 +1789,10 @@
  //
  //    A simple bookmarks query will result in a hierarchical tree of
  //    bookmark items, folders and separators.
---- a/toolkit/components/places/src/nsNavHistory.h	
-+++ a/toolkit/components/places/src/nsNavHistory.h	
-@@ -83,16 +83,20 @@ 
+diff --git a/toolkit/components/places/src/nsNavHistory.h b/toolkit/components/places/src/nsNavHistory.h
+--- a/toolkit/components/places/src/nsNavHistory.h
++++ b/toolkit/components/places/src/nsNavHistory.h
+@@ -83,16 +83,20 @@
  // mInPrivateBrowsing member
  #define PRIVATEBROWSING_NOTINITED (PRBool(0xffffffff))
  
@@ -1804,9 +1811,9 @@
  #endif
  // Fired when Places is shutting down.
  #define TOPIC_PLACES_SHUTDOWN "places-shutdown"
- // Fired when Places found a locked database while initing.
- #define TOPIC_DATABASE_LOCKED "places-database-locked"
-@@ -103,16 +107,21 @@ 
+ // Internal notification, called after places-shutdown.
+ // If you need to listen for Places shutdown, you should really use
+@@ -107,16 +111,21 @@
  
  namespace mozilla {
  namespace places {
@@ -1828,7 +1835,7 @@
  
  class mozIAnnotationService;
  class nsNavHistory;
-@@ -385,32 +394,67 @@ public:
+@@ -389,32 +398,67 @@ public:
  
    /**
     * Indicates if it is OK to notify history observers or not.
@@ -1896,7 +1903,7 @@
  
  protected:
  
-@@ -678,17 +722,16 @@ protected:
+@@ -682,17 +726,16 @@ protected:
    RedirectHash mRecentRedirects;
    static PLDHashOperator ExpireNonrecentRedirects(
        nsCStringHashKey::KeyType aKey, RedirectInfo& aData, void* aUserArg);
@@ -1914,8 +1921,9 @@
  
    nsresult AutoCompleteFeedback(PRInt32 aIndex,
                                  nsIAutoCompleteController *aController);
---- a/toolkit/components/places/tests/browser/Makefile.in	
-+++ a/toolkit/components/places/tests/browser/Makefile.in	
+diff --git a/toolkit/components/places/tests/browser/Makefile.in b/toolkit/components/places/tests/browser/Makefile.in
+--- a/toolkit/components/places/tests/browser/Makefile.in
++++ b/toolkit/components/places/tests/browser/Makefile.in
 @@ -42,26 +42,31 @@ srcdir		= @srcdir@
  VPATH		= @srcdir@
  relativesrcdir  = toolkit/components/places/tests/browser
@@ -1948,9 +1956,11 @@
  
  libs:: $(_HTTP_FILES)
  	$(INSTALL) $(foreach f,$^,"$f") $(DEPTH)/_tests/testing/mochitest/tests/$(relativesrcdir)
---- a/toolkit/components/places/tests/browser/browser_visituri.js	
-+++ a/toolkit/components/places/tests/browser/browser_visituri.js	
-@@ -0,0 +1,106 @@ 
+diff --git a/toolkit/components/places/tests/browser/browser_visituri.js b/toolkit/components/places/tests/browser/browser_visituri.js
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/places/tests/browser/browser_visituri.js
+@@ -0,0 +1,106 @@
 +/**
 + * Any copyright is dedicated to the Public Domain.
 + * http://creativecommons.org/publicdomain/zero/1.0/
@@ -2057,27 +2067,33 @@
 +    });
 +  });
 +}
---- a/toolkit/components/places/tests/browser/visituri/begin.html	
-+++ a/toolkit/components/places/tests/browser/visituri/begin.html	
-@@ -0,0 +1,6 @@ 
+diff --git a/toolkit/components/places/tests/browser/visituri/begin.html b/toolkit/components/places/tests/browser/visituri/begin.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/places/tests/browser/visituri/begin.html
+@@ -0,0 +1,6 @@
 +<!--
 + Any copyright is dedicated to the Public Domain.
 + http://creativecommons.org/publicdomain/zero/1.0/
 +-->
 +
 +<a id="clickme" href="redirect_twice.sjs">Redirect twice</a>
---- a/toolkit/components/places/tests/browser/visituri/final.html	
-+++ a/toolkit/components/places/tests/browser/visituri/final.html	
-@@ -0,0 +1,6 @@ 
+diff --git a/toolkit/components/places/tests/browser/visituri/final.html b/toolkit/components/places/tests/browser/visituri/final.html
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/places/tests/browser/visituri/final.html
+@@ -0,0 +1,6 @@
 +<!--
 + Any copyright is dedicated to the Public Domain.
 + http://creativecommons.org/publicdomain/zero/1.0/
 +-->
 +
 +OK we're done!
---- a/toolkit/components/places/tests/browser/visituri/redirect_once.sjs	
-+++ a/toolkit/components/places/tests/browser/visituri/redirect_once.sjs	
-@@ -0,0 +1,9 @@ 
+diff --git a/toolkit/components/places/tests/browser/visituri/redirect_once.sjs b/toolkit/components/places/tests/browser/visituri/redirect_once.sjs
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/places/tests/browser/visituri/redirect_once.sjs
+@@ -0,0 +1,9 @@
 +/**
 + * Any copyright is dedicated to the Public Domain.
 + * http://creativecommons.org/publicdomain/zero/1.0/
@@ -2087,9 +2103,11 @@
 +  response.setStatusLine("1.1", 302, "Found");
 +  response.setHeader("Location", "final.html", false);
 +}
---- a/toolkit/components/places/tests/browser/visituri/redirect_twice.sjs	
-+++ a/toolkit/components/places/tests/browser/visituri/redirect_twice.sjs	
-@@ -0,0 +1,9 @@ 
+diff --git a/toolkit/components/places/tests/browser/visituri/redirect_twice.sjs b/toolkit/components/places/tests/browser/visituri/redirect_twice.sjs
+new file mode 100644
+--- /dev/null
++++ b/toolkit/components/places/tests/browser/visituri/redirect_twice.sjs
+@@ -0,0 +1,9 @@
 +/**
 + * Any copyright is dedicated to the Public Domain.
 + * http://creativecommons.org/publicdomain/zero/1.0/
@@ -2099,9 +2117,10 @@
 +  response.setStatusLine("1.1", 302, "Found");
 +  response.setHeader("Location", "redirect_once.sjs", false);
 +}
---- a/toolkit/components/places/tests/cpp/places_test_harness.h	
-+++ a/toolkit/components/places/tests/cpp/places_test_harness.h	
-@@ -42,16 +42,19 @@ 
+diff --git a/toolkit/components/places/tests/cpp/places_test_harness.h b/toolkit/components/places/tests/cpp/places_test_harness.h
+--- a/toolkit/components/places/tests/cpp/places_test_harness.h
++++ b/toolkit/components/places/tests/cpp/places_test_harness.h
+@@ -42,16 +42,19 @@
  #include "nsThreadUtils.h"
  #include "nsNetUtil.h"
  #include "nsDocShellCID.h"
@@ -2256,9 +2275,10 @@
 +  rv = stmt->GetInt32(2, &result.transitionType);
 +  do_check_success(rv);
 +}
---- a/toolkit/components/places/tests/cpp/test_IHistory.cpp	
-+++ a/toolkit/components/places/tests/cpp/test_IHistory.cpp	
-@@ -33,16 +33,17 @@ 
+diff --git a/toolkit/components/places/tests/cpp/test_IHistory.cpp b/toolkit/components/places/tests/cpp/test_IHistory.cpp
+--- a/toolkit/components/places/tests/cpp/test_IHistory.cpp
++++ b/toolkit/components/places/tests/cpp/test_IHistory.cpp
+@@ -33,16 +33,17 @@
   * decision by deleting the provisions above and replace them with the notice
   * and other provisions required by the GPL or the LGPL. If you do not delete
   * the provisions above, a recipient may use your version of this file under
